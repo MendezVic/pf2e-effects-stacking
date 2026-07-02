@@ -1,0 +1,3 @@
+# Built LevelDB packs are binary blobs; their JSON sources (packs/_source) stay text + diffable.
+packs/** binary
+packs/_source/** text=auto diff merge

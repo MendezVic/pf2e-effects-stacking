@@ -1,0 +1,44 @@
+{
+  "id": "pf2e-effects-stacking",
+  "title": "PF2e Effects Stacking",
+  "description": "Allows PF2e same-type modifiers to stack when they come from different sources.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Victor Mendez"
+    }
+  ],
+  "esmodules": [
+    "dist/pf2e-effects-stacking.js"
+  ],
+  "styles": [
+    "dist/pf2e-effects-stacking.css"
+  ],
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    }
+  ],
+  "packs": [],
+  "relationships": {
+    "systems": [
+      {
+        "id": "pf2e",
+        "type": "system",
+        "compatibility": {
+          "minimum": "8.0.0"
+        }
+      }
+    ]
+  },
+  "compatibility": {
+    "minimum": "14",
+    "verified": "14"
+  },
+  "url": "https://github.com/MendezVic/pf2e-effects-stacking",
+  "manifest": "https://github.com/MendezVic/pf2e-effects-stacking/releases/latest/download/module.json",
+  "download": "https://github.com/MendezVic/pf2e-effects-stacking/releases/latest/download/pf2e-effects-stacking.zip"
+}

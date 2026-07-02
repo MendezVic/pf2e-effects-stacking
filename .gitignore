@@ -1,0 +1,23 @@
+node_modules/
+dist/
+.vite-cache/
+.DS_Store
+*.zip
+*.log
+
+# Compendium packs are built from packs/_source by `npm run build` (gitignored like dist/);
+# only the JSON sources are tracked.
+packs/*
+!packs/_source/
+
+# Local dev paths + reference symlinks (sandbox only, created by npm run setup)
+.dev-paths.json
+_pf2e-source
+_foundry-data
+_foundry-modules
+
+# Playwright e2e harness (all generated locally)
+test/foundry-data/
+test-results/
+playwright-report/
+playwright/.cache/

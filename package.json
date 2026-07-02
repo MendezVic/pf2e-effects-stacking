@@ -1,0 +1,49 @@
+{
+  "name": "pf2e-effects-stacking",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Foundry VTT PF2e module that stacks same-type effects from different sources.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "init": "node scripts/init.ts",
+    "remove-example-files": "node scripts/removeExampleFiles.ts",
+    "build": "node scripts/pack.ts && vite build",
+    "dev": "vite",
+    "watch": "vite build --watch",
+    "check": "svelte-check --tsconfig ./tsconfig.json && tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
+    "check:e2e": "tsc --noEmit -p src/tests/e2e/tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:e2e": "npm run build && playwright test",
+    "test:e2e:run": "playwright test",
+    "test:e2e:setup": "node scripts/setup-test-env.ts",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:report": "playwright show-report",
+    "test:foundry": "bash scripts/start-test-env.sh",
+    "clean": "rm -rf dist",
+    "setup": "node scripts/setup.ts",
+    "deploy": "node scripts/deploy.ts",
+    "pack": "fvtt package pack",
+    "unpack": "fvtt package unpack",
+    "build:adventure": "node scripts/build-adventure.ts",
+    "normalize": "node scripts/normalize-refs.ts"
+  },
+  "devDependencies": {
+    "@foundryvtt/foundryvtt-cli": "^3.0.3",
+    "@playwright/test": "^1.61.0",
+    "@sveltejs/vite-plugin-svelte": "^7.0.0",
+    "@types/node": "^22.12.0",
+    "@vitest/ui": "^4.1.9",
+    "foundry-pf2e": "github:7H3LaughingMan/foundry-pf2e#78aa843c39a59e06ede407a45ed1fd627169b5a3",
+    "svelte": "^5.46.4",
+    "svelte-check": "^4.1.4",
+    "typescript": "^5.9.2",
+    "vite": "^8.0.0",
+    "vitest": "^4.1.5"
+  }
+}
