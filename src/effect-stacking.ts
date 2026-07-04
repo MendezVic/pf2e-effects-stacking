@@ -7,6 +7,20 @@ export interface StackableModifier {
   modifier: number;
   type: StackableModifierType;
   source: string | null;
+  rule?: {
+    item?: {
+      uuid?: string | null;
+      sourceId?: string | null;
+      flags?: {
+        pf2e?: {
+          aura?: {
+            slug?: string;
+            origin?: string;
+          };
+        };
+      };
+    } | null;
+  } | null;
   enabled: boolean;
   ignored: boolean;
   force?: boolean;
@@ -21,6 +35,12 @@ function modifierKind(modifier: StackableModifier): ModifierKind {
 }
 
 function modifierSource(modifier: StackableModifier): string {
+  const aura = modifier.rule?.item?.flags?.pf2e?.aura;
+  const auraSourceId = modifier.rule?.item?.sourceId;
+  if (aura?.origin && auraSourceId) return `aura:${auraSourceId}:${aura.origin}`;
+
+  const itemUuid = modifier.rule?.item?.uuid;
+  if (itemUuid) return itemUuid;
   return modifier.source || '';
 }
 

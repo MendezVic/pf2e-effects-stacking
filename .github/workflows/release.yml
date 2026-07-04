@@ -29,7 +29,6 @@ jobs:
 
       - name: Install and build
         run: |
-          node scripts/check-lockfile.ts
           npm ci
           npm run check
           npm run build
@@ -37,9 +36,7 @@ jobs:
       - name: Build release zip
         run: |
           zip -r pf2e-effects-stacking.zip \
-            module.json LICENSE README.md dist lang packs assets \
-            -x "packs/_source/*" \
-            -x "packs/*/LOCK" -x "packs/*/LOG" -x "packs/*/LOG.old" -x "packs/*/*.log" \
+            module.json LICENSE README.md dist lang \
             -x "*/.DS_Store"
 
       - name: Create GitHub Release

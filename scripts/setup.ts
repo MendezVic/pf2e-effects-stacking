@@ -1,10 +1,8 @@
 // Dev environment setup. Idempotent. Run with `npm run setup`.
-//   1. Personalize module.json — offer to fill the <your-org>/<your-name> placeholders
-//      `npm run init` couldn't resolve (auto-detected from git; skipped on the template).
-//   2. Find the Foundry data dir — detect per-platform, else ask for the path.
-//   3. Resolve the PF2e system source — detect, clone foundryvtt/pf2e, point at a
+//   1. Find the Foundry data dir — detect per-platform, else ask for the path.
+//   2. Resolve the PF2e system source — detect, clone foundryvtt/pf2e, point at a
 //      checkout, or skip (types also ship via the foundry-pf2e dep, so it's optional).
-//   4. Symlink references INTO the repo, then scaffold a *real* module dir in Foundry's
+//   3. Symlink references INTO the repo, then scaffold a *real* module dir in Foundry's
 //      modules/ whose entries symlink back to the repo (see scaffoldDevModule).
 // Resolved paths cache in .dev-paths.json (gitignored) so re-runs don't re-ask.
 // Flags: --reconfigure (ask again), --no-link (resolve+cache only), --yes (no prompts).
@@ -17,7 +15,6 @@ import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
-import { ownerFromOrigin, authorName, isValidOwner } from './git-identity.ts';
 
 const repo = process.cwd();
 const home = homedir();
@@ -242,13 +239,9 @@ function link(linkPath: string, target: string, options: LinkOptions = {}): void
   }
 }
 
-// Dev install: a *real* module dir whose entries symlink back to the repo, NOT one symlink
-// pointing at the whole repo. The whole-repo form exposes node_modules/.git to Foundry's file
-// picker, makes the repo's module.json the one Foundry loads, and ships nothing on its own —
-// so any non-symlink install (a release, a copied folder) had no assets. Per-entry symlinks
-// keep live edits and the Vite proxy's HMR while matching the shape `npm run deploy` copies.
-// We link the content dirs (assets/lang/packs) + the manifest + dist; the TypeScript sources
-// under src/ stay out of the module.
+// Dev install: a *real* module dir whose entries symlink back to the repo, NOT one
+// symlink pointing at the whole repo. This keeps live edits and the Vite watcher while
+// matching the shape shipped in the release zip.
 function scaffoldDevModule(modulesDir: string): void {
   const dest = join(modulesDir, ID);
   const st = lstatSync(dest, { throwIfNoEntry: false });
@@ -262,68 +255,11 @@ function scaffoldDevModule(modulesDir: string): void {
   link(join(dest, 'module.json'), join(repo, 'module.json'), { kind: 'file', replaceExisting: true });
   link(join(dest, 'dist'), join(repo, 'dist'), { allowMissing: true, kind: 'dir', replaceExisting: true });
   link(join(dest, 'lang'), join(repo, 'lang'), { kind: 'dir', replaceExisting: true });
-  link(join(dest, 'packs'), join(repo, 'packs'), { kind: 'dir', replaceExisting: true });
-  link(join(dest, 'assets'), join(repo, 'assets'), { kind: 'dir', replaceExisting: true });
   console.log(`scaffolded dev module → ${dest}`);
-}
-
-const ORG_PLACEHOLDER = '<your-org>';
-const AUTHOR_PLACEHOLDER = '<your-name>';
-
-// init.ts deletes itself once it has run, so its presence means this is the un-initialized
-// template — the placeholders are intentional there and must not be filled in.
-async function resolveIdentity(): Promise<void> {
-  if (existsSync(join(repo, 'scripts', 'init.ts'))) return;
-  const manifestPath = join(repo, 'module.json');
-  if (!existsSync(manifestPath)) return;
-  const manifest = readFileSync(manifestPath, 'utf8');
-  const needsOrg = manifest.includes(ORG_PLACEHOLDER);
-  const needsAuthor = manifest.includes(AUTHOR_PLACEHOLDER);
-  if (!needsOrg && !needsAuthor) return;
-
-  const org = needsOrg ? ownerFromOrigin(repo) : undefined;
-  const author = needsAuthor ? authorName(repo) : undefined;
-
-  console.log('• module.json still has template placeholders:');
-  if (needsOrg) console.log(`    owner  ${ORG_PLACEHOLDER}  →  ${org ?? '(no origin remote)'}`);
-  if (needsAuthor) console.log(`    author ${AUTHOR_PLACEHOLDER}  →  ${author ?? '(git config user.name unset)'}`);
-
-  if (!interactive) {
-    console.log('  Re-run `npm run setup` interactively to fill them, or edit module.json.\n');
-    return;
-  }
-
-  let finalOrg = org;
-  if (needsOrg && !finalOrg) {
-    const typed = await ask('  GitHub owner for the module.json URLs (blank to skip):');
-    if (typed && isValidOwner(typed)) finalOrg = typed;
-    else if (typed) console.log(`  "${typed}" isn't a valid GitHub owner — skipping owner.`);
-  }
-  const finalAuthor = needsAuthor ? author || (await ask('  Author name for module.json (blank to skip):')) : undefined;
-
-  const changes = [
-    finalAuthor && `author = ${finalAuthor}`,
-    finalOrg && `owner = ${finalOrg}`,
-  ].filter(Boolean);
-  if (changes.length === 0) {
-    console.log('  Left as placeholders.\n');
-    return;
-  }
-  if (!(await confirm(`  Write ${changes.join(', ')} to module.json?`, true))) {
-    console.log('  Left as placeholders.\n');
-    return;
-  }
-  let updated = manifest;
-  if (finalOrg) updated = updated.replaceAll(ORG_PLACEHOLDER, finalOrg);
-  if (finalAuthor) updated = updated.replaceAll(AUTHOR_PLACEHOLDER, finalAuthor);
-  writeFileSync(manifestPath, updated);
-  console.log('  ✓ updated module.json\n');
 }
 
 const cfg = readConfig();
 console.log('Setting up the dev environment…\n');
-
-await resolveIdentity();
 
 const foundryData = await resolveFoundryData(cfg);
 const pf2eSource = await resolvePf2eSource(cfg);

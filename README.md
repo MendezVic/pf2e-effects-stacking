@@ -1,21 +1,19 @@
 # PF2e Effects Stacking
 
-A Foundry VTT module for Pathfinder 2e that changes how same-type modifiers stack.
+A Foundry VTT module for Pathfinder 2e that lets same-type modifiers stack when they
+come from different sources.
 
-PF2e normally keeps only one modifier for a given type and kind. For example, two
-`+1 status` bonuses to AC from different effects do not stack. This module allows
-same-type modifiers to stack when they come from different sources.
-
-If two modifiers share the same source, only the strongest one for that type and kind
-is used.
+It also consolidates duplicate PF2e aura effects into a single generated effect with
+source tracking, so overlapping auras like Protective Wards and Dirge of Doom can apply
+their combined value cleanly.
 
 ## Development
 
 ```bash
 npm run check
 npm run test
-npm run build
+npm run setup
+npm run watch
 ```
 
-The module patches `game.pf2e.StatisticModifier.prototype.calculateTotal` on Foundry's
-`ready` hook.
+Foundry loads `dist/pf2e-effects-stacking.js` and `lang/en.json` from `module.json`.

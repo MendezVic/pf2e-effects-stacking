@@ -1,5 +1,4 @@
 import { defineConfig } from 'vite';
-import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -11,8 +10,6 @@ const FOUNDRY = 'http://localhost:30000';
 export default defineConfig({
   root: 'src/',
   base: `/modules/${id}/dist/`,
-  // root is src/, so point the plugin at the repo-root config (shared with svelte-check).
-  plugins: [svelte({ configFile: fileURLToPath(new URL('./svelte.config.ts', import.meta.url)) })],
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
@@ -30,8 +27,8 @@ export default defineConfig({
         target: `http://localhost:30001/modules/${id}/dist`,
         rewrite: () => '/index.ts',
       },
-      // Our static files live on disk under the module, not in Vite's src/ root — Foundry serves them.
-      [`^/modules/${id}/(lang|packs|assets)/`]: FOUNDRY,
+      // Our static localization files live under the module, not in Vite's src/ root.
+      [`^/modules/${id}/lang/`]: FOUNDRY,
       // Everything outside our module (Foundry core, the active system, other modules).
       [`^(?!/modules/${id}/)`]: FOUNDRY,
       '/socket.io': { target: 'ws://localhost:30000', ws: true },

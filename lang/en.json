@@ -1,3 +1,10 @@
 {
-  "pf2e-effects-stacking": {}
+  "pf2e-effects-stacking": {
+    "settings": {
+      "debugLogs": {
+        "name": "Enable debug logs",
+        "hint": "Show detailed aura stacking diagnostics in the browser console. Leave this off unless you are troubleshooting."
+      }
+    }
+  }
 }

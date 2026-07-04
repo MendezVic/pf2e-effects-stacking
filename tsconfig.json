@@ -19,6 +19,6 @@
     "noEmit": true,
     "types": ["foundry-pf2e"]
   },
-  "include": ["src/**/*", "src/**/*.svelte"],
-  "exclude": ["node_modules", "dist", "src/tests/e2e"]
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
 }

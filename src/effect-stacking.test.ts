@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { applyUnifiedEffectStacking, type StackableModifier } from './effect-stacking';
+import { MODULE_ID } from './constants';
+import { buildAggregatedEffectUpdate } from './aura/aggregation';
 
 type ModifierData = Partial<StackableModifier> & Pick<StackableModifier, 'slug' | 'modifier' | 'source'>;
 
@@ -21,6 +23,81 @@ function apply(modifiers: StackableModifier[]): { total: number; enabled: boolea
   };
 }
 
+(globalThis as unknown as { foundry: { utils: Record<string, unknown> } }).foundry = {
+  utils: {
+    deepClone: <T>(value: T): T => structuredClone(value),
+    escapeHTML: (value: string): string => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
+    getProperty: (source: Record<string, unknown>, path: string): unknown => {
+      return path.split('.').reduce<unknown>((value, key) => {
+        return value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
+      }, source);
+    },
+  },
+};
+
+function aggregateEffect(data: {
+  description: string;
+  rules: Record<string, unknown>[];
+  baseRules?: Record<string, unknown>[];
+  contributions?: unknown[];
+}): {
+  type: 'effect';
+  id: string;
+  sourceId: string;
+  flags: { pf2e: { aura: { slug: string; origin: string; removeOnExit: boolean } }; [MODULE_ID]?: Record<string, unknown> };
+  system: { description: { value: string }; rules: Record<string, unknown>[] };
+  toObject: () => Record<string, unknown>;
+  update: () => Promise<unknown>;
+} {
+  const source = {
+    type: 'effect' as const,
+    id: 'effect-id',
+    sourceId: 'Compendium.test.Item.effect',
+    flags: {
+      pf2e: { aura: { slug: 'test-aura', origin: 'Actor.source-a', removeOnExit: true } },
+      [MODULE_ID]: {
+        ...(data.baseRules ? { baseRules: data.baseRules } : {}),
+        ...(data.contributions ? { auraContributions: data.contributions } : {}),
+      },
+    },
+    system: {
+      description: { value: data.description },
+      rules: data.rules,
+    },
+    update: async () => null,
+  };
+
+  return {
+    ...source,
+    toObject: () => structuredClone({
+      type: source.type,
+      id: source.id,
+      sourceId: source.sourceId,
+      flags: source.flags,
+      system: source.system,
+    }),
+  };
+}
+
+const twoAuraContributions = [
+  {
+    origin: 'Actor.source-a',
+    name: 'Hei',
+    token: 'Scene.scene.Token.source-a',
+    auraSlug: 'test-aura',
+    sourceId: 'Compendium.test.Item.effect',
+    removeOnExit: true,
+  },
+  {
+    origin: 'Actor.source-b',
+    name: 'Lini',
+    token: 'Scene.scene.Token.source-b',
+    auraSlug: 'test-aura',
+    sourceId: 'Compendium.test.Item.effect',
+    removeOnExit: true,
+  },
+];
+
 describe('applyUnifiedEffectStacking', () => {
   it('stacks same-type bonuses from different sources even when they have the same name', () => {
     const modifiers = [
@@ -31,6 +108,87 @@ describe('applyUnifiedEffectStacking', () => {
     expect(apply(modifiers)).toEqual({
       total: 2,
       enabled: [true, true],
+      ignored: [false, false],
+    });
+  });
+
+  it('stacks same-source aura bonuses from different originating effect items', () => {
+    const modifiers = [
+      modifier({
+        slug: 'protective-wards',
+        modifier: 1,
+        source: 'Protective Wards',
+        rule: { item: { uuid: 'Actor.ally-a.Item.protective-wards-effect' } },
+      }),
+      modifier({
+        slug: 'protective-wards',
+        modifier: 1,
+        source: 'Protective Wards',
+        rule: { item: { uuid: 'Actor.ally-b.Item.protective-wards-effect' } },
+      }),
+    ];
+
+    expect(apply(modifiers)).toEqual({
+      total: 2,
+      enabled: [true, true],
+      ignored: [false, false],
+    });
+  });
+
+  it('stacks same-source aura bonuses from different aura origins even with the same effect source id', () => {
+    const modifiers = [
+      modifier({
+        slug: 'protective-wards',
+        modifier: 1,
+        source: 'Actor.target.Item.effect-a',
+        rule: {
+          item: {
+            uuid: 'Actor.target.Item.effect-a',
+            sourceId: 'Compendium.pf2e.spell-effects.Item.dWbg2gACxMkSnZag',
+            flags: { pf2e: { aura: { slug: 'protective-ward', origin: 'Actor.caster-a' } } },
+          },
+        },
+      }),
+      modifier({
+        slug: 'protective-wards',
+        modifier: 1,
+        source: 'Actor.target.Item.effect-b',
+        rule: {
+          item: {
+            uuid: 'Actor.target.Item.effect-b',
+            sourceId: 'Compendium.pf2e.spell-effects.Item.dWbg2gACxMkSnZag',
+            flags: { pf2e: { aura: { slug: 'protective-ward', origin: 'Actor.caster-b' } } },
+          },
+        },
+      }),
+    ];
+
+    expect(apply(modifiers)).toEqual({
+      total: 2,
+      enabled: [true, true],
+      ignored: [false, false],
+    });
+  });
+
+  it('keeps only the highest same-source bonus from the same originating effect item', () => {
+    const modifiers = [
+      modifier({
+        slug: 'minor-defense',
+        modifier: 1,
+        source: 'Protective Wards',
+        rule: { item: { uuid: 'Actor.ally-a.Item.protective-wards-effect' } },
+      }),
+      modifier({
+        slug: 'major-defense',
+        modifier: 2,
+        source: 'Protective Wards',
+        rule: { item: { uuid: 'Actor.ally-a.Item.protective-wards-effect' } },
+      }),
+    ];
+
+    expect(apply(modifiers)).toEqual({
+      total: 2,
+      enabled: [false, true],
       ignored: [false, false],
     });
   });
@@ -124,5 +282,153 @@ describe('applyUnifiedEffectStacking', () => {
       enabled: [false, true],
       ignored: [true, false],
     });
+  });
+});
+
+describe('buildAggregatedEffectUpdate', () => {
+  it('scales a merged Protective Wards effect and lists each aura source', () => {
+    const update = buildAggregatedEffectUpdate(
+      aggregateEffect({
+        description: '<p>You gain a +1 status bonus to AC.</p>',
+        rules: [
+          {
+            key: 'FlatModifier',
+            selector: 'ac',
+            type: 'status',
+            value: 1,
+          },
+        ],
+      }),
+      twoAuraContributions,
+    );
+
+    expect(update['system.rules']).toEqual([
+      {
+        key: 'FlatModifier',
+        selector: 'ac',
+        type: 'status',
+        value: 2,
+      },
+    ]);
+    expect(update['system.description.value']).toContain('You gain a +2 status bonus to AC.');
+    expect(update['system.description.value']).toContain('+1 ac from Hei');
+    expect(update['system.description.value']).toContain('+1 ac from Lini');
+    expect(update[`flags.${MODULE_ID}.auraContributions`]).toEqual(twoAuraContributions);
+  });
+
+  it('scales a merged Dirge-style condition minimum and the granted condition badge', () => {
+    const update = buildAggregatedEffectUpdate(
+      aggregateEffect({
+        description: "<p>Creatures with this effect won't automatically reduce their Frightened value below 1.</p>",
+        rules: [
+          {
+            key: 'ActiveEffectLike',
+            mode: 'add',
+            path: 'flags.xdy-pf2e-workbench.condition.frightened.min',
+            value: 1,
+          },
+          {
+            key: 'GrantItem',
+            uuid: 'Compendium.pf2e.conditionitems.Item.TBSHQspnbcqxsmjL',
+            allowDuplicate: true,
+            inMemoryOnly: true,
+          },
+        ],
+      }),
+      twoAuraContributions,
+    );
+
+    expect(update['system.rules']).toEqual([
+      {
+        key: 'ActiveEffectLike',
+        mode: 'add',
+        path: 'flags.xdy-pf2e-workbench.condition.frightened.min',
+        value: 2,
+      },
+      {
+        key: 'GrantItem',
+        uuid: 'Compendium.pf2e.conditionitems.Item.TBSHQspnbcqxsmjL',
+        allowDuplicate: true,
+        inMemoryOnly: true,
+        alterations: [
+          {
+            mode: 'override',
+            property: 'badge-value',
+            value: 2,
+          },
+        ],
+      },
+    ]);
+    expect(update['system.description.value']).toContain('<li>Hei</li>');
+    expect(update['system.description.value']).toContain('<li>Lini</li>');
+    expect(update['system.description.value']).not.toContain('AC from');
+  });
+
+  it('recovers a valid base value from an older stacked Dirge effect with polluted base rules', () => {
+    const update = buildAggregatedEffectUpdate(
+      aggregateEffect({
+        description: "<p>Creatures with this effect won't automatically reduce their Frightened value below 1.</p>",
+        baseRules: [
+          {
+            key: 'ActiveEffectLike',
+            mode: 'add',
+            path: 'flags.xdy-pf2e-workbench.condition.frightened.min',
+            value: 0.5,
+          },
+        ],
+        contributions: twoAuraContributions,
+        rules: [
+          {
+            key: 'ActiveEffectLike',
+            mode: 'add',
+            path: 'flags.xdy-pf2e-workbench.condition.frightened.min',
+            value: 2,
+          },
+          {
+            key: 'GrantItem',
+            uuid: 'Compendium.pf2e.conditionitems.Item.TBSHQspnbcqxsmjL',
+            allowDuplicate: true,
+            inMemoryOnly: true,
+          },
+        ],
+      }),
+      twoAuraContributions,
+    );
+
+    expect(update['system.rules']).toEqual([
+      {
+        key: 'ActiveEffectLike',
+        mode: 'add',
+        path: 'flags.xdy-pf2e-workbench.condition.frightened.min',
+        value: 2,
+      },
+      {
+        key: 'GrantItem',
+        uuid: 'Compendium.pf2e.conditionitems.Item.TBSHQspnbcqxsmjL',
+        allowDuplicate: true,
+        inMemoryOnly: true,
+        alterations: [
+          {
+            mode: 'override',
+            property: 'badge-value',
+            value: 2,
+          },
+        ],
+      },
+    ]);
+    expect(update[`flags.${MODULE_ID}.baseRules`]).toEqual([
+      {
+        key: 'ActiveEffectLike',
+        mode: 'add',
+        path: 'flags.xdy-pf2e-workbench.condition.frightened.min',
+        value: 1,
+      },
+      {
+        key: 'GrantItem',
+        uuid: 'Compendium.pf2e.conditionitems.Item.TBSHQspnbcqxsmjL',
+        allowDuplicate: true,
+        inMemoryOnly: true,
+      },
+    ]);
   });
 });
