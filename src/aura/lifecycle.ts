@@ -11,6 +11,14 @@ function auraAffectsActor(data: AuraEffectData, origin: AuraOrigin['actor'], act
   return (data.includesSelf && origin.uuid === actor.uuid) || (data.affects === 'allies' && actor.isAllyOf(origin)) || (data.affects === 'enemies' && actor.isEnemyOf(origin)) || (data.affects === 'all' && origin.uuid !== actor.uuid);
 }
 
+function isResponsibleGM(): boolean {
+  if (!game.user.isGM) return false;
+
+  const users = game.users as { activeGM?: { id: string } } | undefined;
+  const activeGM = users?.activeGM;
+  return !activeGM || activeGM.id === game.user.id;
+}
+
 function setPath(source: Record<string, unknown>, path: string, value: unknown): void {
   foundry.utils.setProperty(source, path, value);
 }
@@ -132,6 +140,13 @@ function auraOriginFromToken(token: RuntimeToken): AuraOrigin | null {
 
 async function refreshActorAuraEffects(actor: ActorPF2eInstance, reason: string): Promise<void> {
   if (!canvas.ready) return;
+  if (!isResponsibleGM()) {
+    debugLog('skipped aura refresh: user is not responsible GM', {
+      actor: actorSummary(actor),
+      reason,
+    });
+    return;
+  }
 
   debugLog('refresh actor auras started', {
     actor: actorSummary(actor),
@@ -333,7 +348,7 @@ async function consolidateAuraEffects(actor: ActorPF2eInstance, aura: AuraData, 
       token: origin.token.uuid,
     },
     effectCount: aura.effects.length,
-    currentUserIsPrimaryUpdater: game.user === actor.primaryUpdater,
+    currentUserIsResponsibleGM: isResponsibleGM(),
     isParty: actor.isOfType('party'),
     allowsEffects: actor.allowedItemTypes.includes('effect'),
     originTokenHidden: origin.token.hidden,
@@ -344,8 +359,8 @@ async function consolidateAuraEffects(actor: ActorPF2eInstance, aura: AuraData, 
 
   debugLog('checking aura effects after PF2E pass', guardState);
 
-  if (game.user !== actor.primaryUpdater) {
-    debugLog('skipped aura consolidation: user is not actor primary updater', guardState);
+  if (!isResponsibleGM()) {
+    debugLog('skipped aura consolidation: user is not responsible GM', guardState);
     return;
   }
 
