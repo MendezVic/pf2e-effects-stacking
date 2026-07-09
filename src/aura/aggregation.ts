@@ -162,23 +162,34 @@ function buildStackedDescription(baseDescription: string, baseRules: Record<stri
   ].filter(Boolean).join('\n');
 }
 
-export function buildAggregatedEffectUpdate(effect: EffectItem, contributions: AuraContribution[]): Record<string, unknown> {
+export function buildAggregatedEffectUpdate(effect: EffectItem, contributions: AuraContribution[], baseSource?: Record<string, unknown>): Record<string, unknown> {
   const source = effect.toObject();
-  const baseDescription = String(foundry.utils.getProperty(source, `flags.${MODULE_ID}.baseDescription`) ?? effect.system?.description?.value ?? '');
-  const sourceBaseRules = foundry.utils.getProperty(source, `flags.${MODULE_ID}.baseRules`);
+  const descriptionSource = baseSource ?? source;
+  const baseDescription = String(foundry.utils.getProperty(descriptionSource, `flags.${MODULE_ID}.baseDescription`) ?? foundry.utils.getProperty(descriptionSource, 'system.description.value') ?? effect.system?.description?.value ?? '');
+  const sourceBaseRules = baseSource ? null : foundry.utils.getProperty(source, `flags.${MODULE_ID}.baseRules`);
   const existingContributionCount = getAuraContributions(effect).length;
-  const baseRules = Array.isArray(sourceBaseRules) && rulesHaveValidBaseValues(sourceBaseRules as Record<string, unknown>[])
+  const baseSourceRules = baseSource ? foundry.utils.getProperty(baseSource, 'system.rules') : null;
+  const baseRules = Array.isArray(baseSourceRules)
+    ? (foundry.utils.deepClone(baseSourceRules) as Record<string, unknown>[])
+    : Array.isArray(sourceBaseRules) && rulesHaveValidBaseValues(sourceBaseRules as Record<string, unknown>[])
     ? (foundry.utils.deepClone(sourceBaseRules) as Record<string, unknown>[])
     : Array.isArray(effect.system?.rules)
       ? unscaleStackableRuleValues(foundry.utils.deepClone(effect.system.rules), existingContributionCount)
       : [];
   const rules = scaleStackableRuleValues(baseRules, contributions.length);
-
-  return {
+  const sourceTraits = baseSource ? foundry.utils.getProperty(baseSource, 'system.traits') : null;
+  const update: Record<string, unknown> = {
     'system.description.value': buildStackedDescription(baseDescription, baseRules, contributions),
     'system.rules': rules,
     [`flags.${MODULE_ID}.baseDescription`]: baseDescription,
     [`flags.${MODULE_ID}.baseRules`]: baseRules,
     [`flags.${MODULE_ID}.auraContributions`]: contributions,
+    [`flags.${MODULE_ID}.managedAuraEffect`]: true,
   };
+
+  if (sourceTraits && typeof sourceTraits === 'object') {
+    update['system.traits'] = foundry.utils.deepClone(sourceTraits);
+  }
+
+  return update;
 }

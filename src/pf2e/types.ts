@@ -20,6 +20,12 @@ export type AuraEffectData = {
   includesSelf: boolean;
   parent: {
     uuid: string;
+    slug?: string | null;
+    system?: {
+      traits?: {
+        otherTags?: string[];
+      };
+    };
     getRollOptions?: (prefix?: 'parent') => string[];
   };
   predicate: {
@@ -142,7 +148,20 @@ export type AuraContributionGroup = {
 };
 
 export type RuntimeAura = {
-  containsToken: (token: unknown) => boolean;
+  containsToken?: (token: unknown) => boolean;
+  bounds?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  squares?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    active?: boolean;
+  }[];
 };
 
 export type RuntimeAuraActor = AuraOrigin['actor'] & {

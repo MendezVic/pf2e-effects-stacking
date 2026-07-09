@@ -490,6 +490,75 @@ describe('buildAggregatedEffectUpdate', () => {
         value: 1,
       },
     ]);
+    expect(update[`flags.${MODULE_ID}.managedAuraEffect`]).toBe(true);
+  });
+
+  it('refreshes altered aura source rules and tags for Glorious Banner', () => {
+    const currentEffect = aggregateEffect({
+      description: '<p>You gain a +1 status bonus to Will saves against fear.</p>',
+      baseRules: [
+        {
+          hideIfDisabled: true,
+          key: 'FlatModifier',
+          predicate: ['item:trait:fear'],
+          selector: ['will'],
+          slug: 'commanders-banner-fear',
+          type: 'status',
+          value: 1,
+        },
+      ],
+      rules: [
+        {
+          hideIfDisabled: true,
+          key: 'FlatModifier',
+          predicate: ['item:trait:fear'],
+          selector: ['will'],
+          slug: 'commanders-banner-fear',
+          type: 'status',
+          value: 1,
+        },
+      ],
+    });
+    const gloriousSource = {
+      system: {
+        description: {
+          value: '<p>If the origin has the Glorious Banner feat, you gain a +1 status bonus to AC, Fortitude saves, and Reflex saves.</p>',
+        },
+        rules: [
+          {
+            hideIfDisabled: true,
+            key: 'FlatModifier',
+            predicate: ['item:trait:fear'],
+            selector: ['will'],
+            slug: 'commanders-banner-fear',
+            type: 'status',
+            value: 1,
+          },
+          {
+            hideIfDisabled: true,
+            key: 'FlatModifier',
+            predicate: ['parent:tag:glorious-banner'],
+            selector: ['reflex', 'fortitude', 'ac'],
+            slug: 'commanders-banner-glorious-banner',
+            type: 'status',
+            value: 1,
+          },
+        ],
+        traits: {
+          value: [],
+          otherTags: ['glorious-banner'],
+        },
+      },
+    };
+
+    const update = buildAggregatedEffectUpdate(currentEffect, [twoAuraContributions[0]], gloriousSource);
+
+    expect(update['system.rules']).toEqual(gloriousSource.system.rules);
+    expect(update['system.traits']).toEqual({
+      value: [],
+      otherTags: ['glorious-banner'],
+    });
+    expect(update[`flags.${MODULE_ID}.baseRules`]).toEqual(gloriousSource.system.rules);
   });
 });
 
@@ -557,15 +626,117 @@ describe('scheduleAuraEffectRefreshForActor', () => {
     expect(maxActiveDeletes).toBe(1);
   });
 
+  it('skips aura effect deletes for items already gone from the actor collection', async () => {
+    vi.useFakeTimers();
+
+    const staleEffect = aggregateEffect({
+      description: '',
+      rules: [],
+      sourceId: 'Compendium.test.Item.effect',
+    });
+    let deleteCalls = 0;
+    const actor = {
+      uuid: 'Actor.target',
+      name: 'Target',
+      items: { has: () => false },
+      itemTypes: { effect: [staleEffect] },
+      getActiveTokens: () => [],
+      deleteEmbeddedDocuments: async () => {
+        deleteCalls += 1;
+        throw new Error('Item "effect-id" does not exist!');
+      },
+    };
+
+    (globalThis as unknown as { game: unknown }).game = {
+      user: { id: 'gm', isGM: true },
+      users: { activeGM: { id: 'gm' } },
+    };
+    (globalThis as unknown as { canvas: unknown }).canvas = {
+      ready: true,
+      tokens: {
+        placeables: [],
+      },
+    };
+    (globalThis as unknown as { window: unknown }).window = globalThis;
+
+    scheduleAuraEffectRefreshForActor(actor, 'test');
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(deleteCalls).toBe(0);
+  });
+
+  it('deletes inactive managed aggregate aura effects after the stale state settles', async () => {
+    vi.useFakeTimers();
+
+    let aggregateUpdate: Record<string, unknown> | null = null;
+    const staleEffect = aggregateEffect({
+      description: '',
+      rules: [
+        {
+          key: 'FlatModifier',
+          selector: 'ac',
+          type: 'status',
+          value: 1,
+        },
+      ],
+      sourceId: 'Compendium.test.Item.effect',
+      contributions: twoAuraContributions,
+    });
+    staleEffect.update = async (update: Record<string, unknown>) => {
+      aggregateUpdate = update;
+      return null;
+    };
+
+    let deleteCalls = 0;
+    const actor = {
+      uuid: 'Actor.target',
+      name: 'Target',
+      itemTypes: { effect: [staleEffect] },
+      items: {
+        has: (id: string) => actor.itemTypes.effect.some(effect => effect.id === id),
+      },
+      getActiveTokens: () => [],
+      deleteEmbeddedDocuments: async (_embeddedName: string, ids: string[]) => {
+        deleteCalls += 1;
+        actor.itemTypes.effect = actor.itemTypes.effect.filter(effect => !ids.includes(effect.id));
+        return [];
+      },
+    };
+
+    (globalThis as unknown as { game: unknown }).game = {
+      user: { id: 'gm', isGM: true },
+      users: { activeGM: { id: 'gm' } },
+    };
+    (globalThis as unknown as { canvas: unknown }).canvas = {
+      ready: true,
+      tokens: {
+        placeables: [],
+      },
+    };
+    (globalThis as unknown as { window: unknown }).window = globalThis;
+
+    scheduleAuraEffectRefreshForActor(actor, 'test');
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(aggregateUpdate?.['system.rules']).toEqual([]);
+    expect(deleteCalls).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(deleteCalls).toBe(1);
+    expect(actor.itemTypes.effect).toEqual([]);
+  });
+
   it('keeps managed aggregate aura effects out of PF2e native remove-on-exit cleanup', async () => {
     vi.useFakeTimers();
 
-    const targetToken = { uuid: 'Scene.scene.Token.target' };
+    const targetToken = { uuid: 'Scene.scene.Token.target', x: 0, y: 0, width: 1, height: 1 };
     const sourceEffect = aggregateEffect({
       description: '<p>You gain a +1 status bonus to AC.</p>',
       rules: [
         {
           key: 'FlatModifier',
+          predicate: ['parent:tag:glorious-banner'],
           selector: 'ac',
           type: 'status',
           value: 1,
@@ -583,14 +754,26 @@ describe('scheduleAuraEffectRefreshForActor', () => {
           removeOnExit: true,
           affects: 'allies' as const,
           includesSelf: false,
-          parent: { uuid: 'Item.aura' },
+          parent: {
+            uuid: 'Item.aura',
+            slug: 'glorious-banner',
+            getRollOptions: () => ['parent:slug:glorious-banner'],
+          },
           predicate: { length: 0, test: () => true },
           alterations: [],
         },
       ],
     };
     const renderedAura = {
-      containsToken: (token: unknown) => token === targetToken,
+      squares: [
+        {
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 100,
+          active: true,
+        },
+      ],
     };
     const originActor = {
       uuid: 'Actor.origin',
@@ -679,5 +862,8 @@ describe('scheduleAuraEffectRefreshForActor', () => {
         removeOnExit: true,
       },
     ]);
+    expect(aggregateUpdate?.['system.traits']).toEqual({
+      otherTags: ['glorious-banner'],
+    });
   });
 });

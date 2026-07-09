@@ -49,7 +49,67 @@ function tokenAura(token: RuntimeToken, auraSlug: string): RuntimeAura | null {
 
 function auraContainsActorToken(aura: RuntimeAura, actor: ActorPF2eInstance): boolean {
   const targetTokens = actorTokens(actor);
-  return targetTokens.some(token => aura.containsToken(token));
+  return targetTokens.some(token => auraContainsToken(aura, token));
+}
+
+function tokenCenter(token: unknown): { x: number; y: number } | null {
+  if (!token || typeof token !== 'object') return null;
+
+  const candidate = token as {
+    x?: number;
+    y?: number;
+    w?: number;
+    h?: number;
+    width?: number;
+    height?: number;
+    document?: {
+      x?: number;
+      y?: number;
+      width?: number;
+      height?: number;
+    };
+  };
+  const x = candidate.x ?? candidate.document?.x;
+  const y = candidate.y ?? candidate.document?.y;
+  if (typeof x !== 'number' || typeof y !== 'number') return null;
+
+  const gridSize = canvas.grid?.size ?? 100;
+  const width = typeof candidate.w === 'number'
+    ? candidate.w
+    : typeof candidate.width === 'number'
+      ? candidate.width * gridSize
+      : typeof candidate.document?.width === 'number'
+        ? candidate.document.width * gridSize
+        : gridSize;
+  const height = typeof candidate.h === 'number'
+    ? candidate.h
+    : typeof candidate.height === 'number'
+      ? candidate.height * gridSize
+      : typeof candidate.document?.height === 'number'
+        ? candidate.document.height * gridSize
+        : gridSize;
+
+  return {
+    x: x + width / 2,
+    y: y + height / 2,
+  };
+}
+
+function pointInRect(point: { x: number; y: number }, rect: { x: number; y: number; width: number; height: number }): boolean {
+  return point.x >= rect.x && point.x < rect.x + rect.width && point.y >= rect.y && point.y < rect.y + rect.height;
+}
+
+function auraContainsToken(aura: RuntimeAura, token: unknown): boolean {
+  if (typeof aura.containsToken === 'function') return aura.containsToken(token);
+
+  const center = tokenCenter(token);
+  if (!center) return false;
+
+  if (Array.isArray(aura.squares) && aura.squares.length > 0) {
+    return aura.squares.some(square => square.active !== false && pointInRect(center, square));
+  }
+
+  return aura.bounds ? pointInRect(center, aura.bounds) : false;
 }
 
 function auraEffectPredicatePasses(actor: ActorPF2eInstance, originActor: AuraOrigin['actor'], auraEffect: AuraEffectData): boolean {
@@ -70,8 +130,10 @@ function sceneTokens(): RuntimeToken[] {
 
 const pendingActorRefreshes = new Map<string, number[]>();
 const pendingAuraEffectCreates = new Map<string, Promise<EffectItem | null>>();
+const pendingManagedAuraEffectDeletes = new Map<string, number>();
 const runningActorRefreshes = new Map<string, Promise<void>>();
 const queuedActorRefreshReasons = new Map<string, string>();
+const MANAGED_AURA_EFFECT_DELETE_DELAY_MS = 1200;
 
 function auraEffectSourceId(effect: EffectItem): string | null {
   const documentDuplicateSource = foundry.utils.getProperty(effect, '_stats.duplicateSource');
@@ -96,8 +158,12 @@ function auraEffectCreateKey(actor: ActorPF2eInstance, auraSlug: string, sourceI
   return `${actor.uuid}:${auraEffectKey(auraSlug, sourceId)}`;
 }
 
+function managedAuraEffectDeleteKey(actor: ActorPF2eInstance, id: string): string {
+  return `${actor.uuid}:${id}`;
+}
+
 function isManagedAggregateAuraEffect(effect: EffectItem): boolean {
-  return Array.isArray(foundry.utils.getProperty(effect, `flags.${MODULE_ID}.auraContributions`));
+  return foundry.utils.getProperty(effect, `flags.${MODULE_ID}.managedAuraEffect`) === true || Array.isArray(foundry.utils.getProperty(effect, `flags.${MODULE_ID}.auraContributions`));
 }
 
 function shouldRemoveStaleAuraEffect(effect: EffectItem): boolean {
@@ -109,6 +175,150 @@ function updatesAreNoop(document: EffectItem, update: Record<string, unknown>): 
     const current = foundry.utils.getProperty(document, path);
     return JSON.stringify(current) === JSON.stringify(value);
   });
+}
+
+function actorHasItem(actor: ActorPF2eInstance, id: string): boolean {
+  const items = (actor as { items?: { has?: (id: string) => boolean; get?: (id: string) => unknown } }).items;
+  if (typeof items?.has === 'function') return items.has(id);
+  if (typeof items?.get === 'function') return Boolean(items.get(id));
+  return actor.itemTypes.effect.some(effect => effect.id === id);
+}
+
+function isMissingItemError(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('message' in error)) return false;
+  return typeof error.message === 'string' && /Item ".+" does not exist/.test(error.message);
+}
+
+async function deleteActorItemsIfPresent(actor: ActorPF2eInstance, ids: string[], context: Record<string, unknown>): Promise<void> {
+  for (const id of [...new Set(ids)]) {
+    if (!actorHasItem(actor, id)) {
+      debugLog('skipped aura effect delete: item already missing', {
+        ...context,
+        id,
+      });
+      continue;
+    }
+
+    try {
+      await actor.deleteEmbeddedDocuments('Item', [id]);
+    } catch (error) {
+      if (!isMissingItemError(error)) throw error;
+      debugLog('skipped aura effect delete: item disappeared during delete', {
+        ...context,
+        id,
+      });
+    }
+  }
+}
+
+function cancelManagedAuraEffectDelete(actor: ActorPF2eInstance, id: string): void {
+  const key = managedAuraEffectDeleteKey(actor, id);
+  const timeoutId = pendingManagedAuraEffectDeletes.get(key);
+  if (timeoutId === undefined) return;
+
+  window.clearTimeout(timeoutId);
+  pendingManagedAuraEffectDeletes.delete(key);
+}
+
+async function deactivateManagedAuraEffects(actor: ActorPF2eInstance, effects: EffectItem[], context: Record<string, unknown>): Promise<void> {
+  const update = {
+    'system.rules': [],
+    [`flags.${MODULE_ID}.auraContributions`]: [],
+    [`flags.${MODULE_ID}.managedAuraEffect`]: true,
+    'flags.pf2e.aura.removeOnExit': false,
+  };
+
+  for (const effect of effects) {
+    if (!actorHasItem(actor, effect.id)) {
+      debugLog('skipped aggregate aura effect deactivate: item already missing', {
+        ...context,
+        effect: effectSummary(effect),
+      });
+      continue;
+    }
+
+    try {
+      await updateEffectIfChanged(effect, update, context);
+    } catch (error) {
+      if (!isMissingItemError(error)) throw error;
+      debugLog('skipped aggregate aura effect deactivate: item disappeared during update', {
+        ...context,
+        effect: effectSummary(effect),
+      });
+    }
+  }
+}
+
+async function deactivateAndScheduleManagedAuraEffectDeletes(actor: ActorPF2eInstance, effects: EffectItem[], context: Record<string, unknown>): Promise<void> {
+  await deactivateManagedAuraEffects(actor, effects, context);
+
+  for (const effect of effects) {
+    if (!actorHasItem(actor, effect.id)) continue;
+
+    const key = managedAuraEffectDeleteKey(actor, effect.id);
+    const pendingDelete = pendingManagedAuraEffectDeletes.get(key);
+    if (pendingDelete !== undefined) {
+      window.clearTimeout(pendingDelete);
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await deleteActorItemsIfPresent(actor, [effect.id], {
+            ...context,
+            action: 'delete inactive managed aggregate aura effect',
+          });
+        } finally {
+          if (pendingManagedAuraEffectDeletes.get(key) === timeoutId) {
+            pendingManagedAuraEffectDeletes.delete(key);
+          }
+        }
+      })();
+    }, MANAGED_AURA_EFFECT_DELETE_DELAY_MS);
+    pendingManagedAuraEffectDeletes.set(key, timeoutId);
+  }
+}
+
+function parentTagsRequiredByRules(source: Record<string, unknown>): string[] {
+  const rules = foundry.utils.getProperty(source, 'system.rules');
+  if (!Array.isArray(rules)) return [];
+
+  const tags = new Set<string>();
+  for (const rule of rules) {
+    if (!rule || typeof rule !== 'object') continue;
+    const predicate = (rule as Record<string, unknown>).predicate;
+    if (!Array.isArray(predicate)) continue;
+
+    for (const predicateTerm of predicate) {
+      if (typeof predicateTerm !== 'string' || !predicateTerm.startsWith('parent:tag:')) continue;
+      tags.add(predicateTerm.slice('parent:tag:'.length));
+    }
+  }
+
+  return [...tags];
+}
+
+function addResolvableParentTags(source: Record<string, unknown>, auraEffect: AuraEffectData): void {
+  const requiredTags = parentTagsRequiredByRules(source);
+  if (requiredTags.length === 0) return;
+
+  const parentOptions = new Set(auraEffect.parent.getRollOptions?.('parent') ?? []);
+  const parentOtherTags = new Set(auraEffect.parent.system?.traits?.otherTags ?? []);
+  const parentSlug = auraEffect.parent.slug ?? null;
+  const resolvableTags = requiredTags.filter(tag => {
+    return parentOtherTags.has(tag) || parentSlug === tag || parentOptions.has(`parent:${tag}`) || parentOptions.has(`parent:slug:${tag}`);
+  });
+  if (resolvableTags.length === 0) return;
+
+  const existingTags = foundry.utils.getProperty(source, 'system.traits.otherTags');
+  const sourceTags = Array.isArray(existingTags) ? existingTags : [];
+  if (!Array.isArray(existingTags)) {
+    setPath(source, 'system.traits.otherTags', sourceTags);
+  }
+
+  for (const tag of resolvableTags) {
+    if (!sourceTags.includes(tag)) sourceTags.push(tag);
+  }
 }
 
 async function updateEffectIfChanged(effect: EffectItem, update: Record<string, unknown>, context: Record<string, unknown>): Promise<void> {
@@ -339,12 +549,32 @@ async function pruneStaleAggregateAuraEffects(actor: ActorPF2eInstance, groups: 
 
   if (staleEffects.length === 0) return;
 
-  debugLog('deleting stale aggregate aura effects', {
+  const managedStaleEffects = staleEffects.filter(isManagedAggregateAuraEffect);
+  const nativeStaleEffects = staleEffects.filter(effect => !isManagedAggregateAuraEffect(effect));
+
+  debugLog('deactivating stale managed aggregate aura effects', {
     actor: actorSummary(actor),
     reason,
-    effects: staleEffects.map(effectSummary),
+    effects: managedStaleEffects.map(effectSummary),
   });
-  await actor.deleteEmbeddedDocuments('Item', staleEffects.map(effect => effect.id));
+  await deactivateAndScheduleManagedAuraEffectDeletes(actor, managedStaleEffects, {
+    actor: actorSummary(actor),
+    reason,
+    action: 'deactivate stale managed aggregate aura effects',
+  });
+
+  if (nativeStaleEffects.length > 0) {
+    debugLog('deleting stale native aura effects', {
+      actor: actorSummary(actor),
+      reason,
+      effects: nativeStaleEffects.map(effectSummary),
+    });
+    await deleteActorItemsIfPresent(actor, nativeStaleEffects.map(effect => effect.id), {
+      actor: actorSummary(actor),
+      reason,
+      action: 'delete stale native aura effects',
+    });
+  }
 }
 
 export function scheduleAuraEffectRefreshForActor(actor: unknown, reason = 'manual'): void {
@@ -442,14 +672,11 @@ async function createAuraEffect(actor: ActorPF2eInstance, aura: AuraData, auraEf
   return create;
 }
 
-async function createAuraEffectUnchecked(actor: ActorPF2eInstance, aura: AuraData, auraEffect: AuraEffectData, origin: AuraOrigin): Promise<EffectItem | null> {
+async function prepareAuraEffectSource(aura: AuraData, auraEffect: AuraEffectData, origin: AuraOrigin): Promise<Record<string, unknown> | null> {
   const effect = await foundry.utils.fromUuid(auraEffect.uuid);
   if (!effect || !('type' in effect) || effect.type !== 'effect' || !('toObject' in effect) || typeof effect.toObject !== 'function') {
     return null;
   }
-
-  const existing = findMatchingAuraEffects(actor, aura.slug, auraEffect.uuid).at(0);
-  if (existing) return existing;
 
   const source = foundry.utils.mergeObject(effect.toObject(), {
     flags: {
@@ -482,6 +709,7 @@ async function createAuraEffectUnchecked(actor: ActorPF2eInstance, aura: AuraDat
     roll: null,
   });
   setPath(source, '_stats.duplicateSource', auraEffect.uuid);
+  setPath(source, `flags.${MODULE_ID}.managedAuraEffect`, true);
 
   if (aura.level !== null) {
     setPath(source, 'system.level.value', aura.level);
@@ -495,6 +723,17 @@ async function createAuraEffectUnchecked(actor: ActorPF2eInstance, aura: AuraDat
   for (const alteration of auraEffect.alterations) {
     alteration.applyTo(source);
   }
+  addResolvableParentTags(source, auraEffect);
+
+  return source;
+}
+
+async function createAuraEffectUnchecked(actor: ActorPF2eInstance, aura: AuraData, auraEffect: AuraEffectData, origin: AuraOrigin): Promise<EffectItem | null> {
+  const existing = findMatchingAuraEffects(actor, aura.slug, auraEffect.uuid).at(0);
+  if (existing) return existing;
+
+  const source = await prepareAuraEffectSource(aura, auraEffect, origin);
+  if (!source) return null;
 
   const created = await actor.createEmbeddedDocuments('Item', [source]);
   return created.at(0) as EffectItem | null;
@@ -514,7 +753,20 @@ async function applyAuraContributionGroup(actor: ActorPF2eInstance, group: AuraC
 
   if (validContributions.length === 0) {
     if (matchingEffects.length > 0) {
-      await actor.deleteEmbeddedDocuments('Item', matchingEffects.map(effect => effect.id));
+      const managedEffects = matchingEffects.filter(isManagedAggregateAuraEffect);
+      const nativeEffects = matchingEffects.filter(effect => !isManagedAggregateAuraEffect(effect));
+      await deactivateAndScheduleManagedAuraEffectDeletes(actor, managedEffects, {
+        actor: actorSummary(actor),
+        reason,
+        aura: group.aura.slug,
+        action: 'deactivate aggregate aura effects with no valid contributions',
+      });
+      await deleteActorItemsIfPresent(actor, nativeEffects.map(effect => effect.id), {
+        actor: actorSummary(actor),
+        reason,
+        aura: group.aura.slug,
+        action: 'delete native aura effects with no valid contributions',
+      });
     }
     return;
   }
@@ -525,9 +777,11 @@ async function applyAuraContributionGroup(actor: ActorPF2eInstance, group: AuraC
     matchingEffects = findMatchingAuraEffects(actor, group.aura.slug, group.auraEffect.uuid);
   }
   if (!primaryEffect) return;
+  cancelManagedAuraEffectDelete(actor, primaryEffect.id);
 
   const duplicateIds = matchingEffects.filter(effect => effect.id !== primaryEffect.id).map(effect => effect.id);
-  const update = buildAggregatedEffectUpdate(primaryEffect, validContributions);
+  const baseSource = await prepareAuraEffectSource(group.aura, group.auraEffect, group.origin);
+  const update = buildAggregatedEffectUpdate(primaryEffect, validContributions, baseSource ?? undefined);
   update['flags.pf2e.aura'] = {
     slug: group.aura.slug,
     origin: validContributions[0].origin,
@@ -565,7 +819,12 @@ async function applyAuraContributionGroup(actor: ActorPF2eInstance, group: AuraC
     duplicateIds,
   });
   if (duplicateIds.length > 0) {
-    await actor.deleteEmbeddedDocuments('Item', duplicateIds);
+    await deleteActorItemsIfPresent(actor, duplicateIds, {
+      actor: actorSummary(actor),
+      reason,
+      aura: group.aura.slug,
+      action: 'delete duplicate aggregate aura effects',
+    });
   }
 }
 
@@ -592,7 +851,7 @@ async function contributionStillApplies(actor: ActorPF2eInstance, contribution: 
   if (contribution.token) {
     const originToken = sceneTokenByUuid(contribution.token);
     const originAura = originToken ? tokenAura(originToken, contribution.auraSlug) : null;
-    const containsTarget = originAura ? targetTokens.some(token => originAura.containsToken(token)) : false;
+    const containsTarget = originAura ? targetTokens.some(token => auraContainsToken(originAura, token)) : false;
     debugLog(containsTarget ? 'aura contribution valid: exact origin token contains target' : 'aura contribution invalid: exact origin token missing or outside target', {
       actor: actorSummary(actor),
       contribution: contributionSummary(contribution),
@@ -606,7 +865,7 @@ async function contributionStillApplies(actor: ActorPF2eInstance, contribution: 
   const originTokens = typeof originActor.getActiveTokens === 'function' ? originActor.getActiveTokens(true, true) : [];
   const containsTarget = originTokens.some(originToken => {
     const originAura = originToken?.auras?.get(contribution.auraSlug) ?? null;
-    return originAura ? targetTokens.some(token => originAura.containsToken(token)) : false;
+    return originAura ? targetTokens.some(token => auraContainsToken(originAura, token)) : false;
   });
   debugLog(containsTarget ? 'aura contribution valid: actor fallback token contains target' : 'aura contribution invalid: actor fallback tokens outside target', {
     actor: actorSummary(actor),
@@ -704,6 +963,7 @@ async function consolidateAuraEffects(actor: ActorPF2eInstance, aura: AuraData, 
       });
       continue;
     }
+    cancelManagedAuraEffectDelete(actor, primaryEffect.id);
 
     const currentContribution: AuraContribution = {
       origin: originActorUuid,
@@ -727,13 +987,23 @@ async function consolidateAuraEffects(actor: ActorPF2eInstance, aura: AuraData, 
     }
 
     if (validContributions.length === 0) {
-      debugLog('deleting aggregate aura effect: no valid aura sources remain', effectState);
-      await actor.deleteEmbeddedDocuments('Item', matchingEffects.map(effect => effect.id));
+      debugLog('deactivating aggregate aura effect: no valid aura sources remain', effectState);
+      const managedEffects = matchingEffects.filter(isManagedAggregateAuraEffect);
+      const nativeEffects = matchingEffects.filter(effect => !isManagedAggregateAuraEffect(effect));
+      await deactivateAndScheduleManagedAuraEffectDeletes(actor, managedEffects, {
+        ...effectState,
+        action: 'deactivate aggregate aura effects with no valid aura sources',
+      });
+      await deleteActorItemsIfPresent(actor, nativeEffects.map(effect => effect.id), {
+        ...effectState,
+        action: 'delete native aura effects with no valid aura sources',
+      });
       continue;
     }
 
     const duplicateIds = matchingEffects.filter(effect => effect.id !== primaryEffect.id).map(effect => effect.id);
-    const update = buildAggregatedEffectUpdate(primaryEffect, validContributions);
+    const baseSource = await prepareAuraEffectSource(aura, auraEffect, origin);
+    const update = buildAggregatedEffectUpdate(primaryEffect, validContributions, baseSource ?? undefined);
     update['flags.pf2e.aura'] = {
       slug: aura.slug,
       origin: validContributions[0].origin,
@@ -772,7 +1042,10 @@ async function consolidateAuraEffects(actor: ActorPF2eInstance, aura: AuraData, 
       count: validContributions.length,
     });
     if (duplicateIds.length > 0) {
-      await actor.deleteEmbeddedDocuments('Item', duplicateIds);
+      await deleteActorItemsIfPresent(actor, duplicateIds, {
+        ...effectState,
+        action: 'delete duplicate aggregate aura effects',
+      });
     }
   }
 }

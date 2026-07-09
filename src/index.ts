@@ -53,6 +53,15 @@ function debugTokenHook(hook: string, token: unknown, data?: Record<string, unkn
   });
 }
 
+function isManagedAuraItem(item: { flags?: Record<string, unknown> }): boolean {
+  const flags = item.flags?.[MODULE_ID];
+  return Boolean(
+    flags &&
+    typeof flags === 'object' &&
+    ('managedAuraEffect' in flags || Array.isArray((flags as Record<string, unknown>).auraContributions))
+  );
+}
+
 Hooks.once('init', () => {
   registerSettings();
   if (debugLogsEnabled()) console.debug(`${MODULE_ID} | module initialized`);
@@ -114,6 +123,7 @@ Hooks.on('deleteToken', (token) => {
 Hooks.on('createItem', (item) => {
   if (!userCanManageAuraEffects()) return;
   if (item.type !== 'effect' || !item.flags?.pf2e?.aura) return;
+  if (isManagedAuraItem(item)) return;
 
   scheduleAuraEffectRefreshForActor(item.actor, 'createItem');
 });
@@ -121,6 +131,7 @@ Hooks.on('createItem', (item) => {
 Hooks.on('deleteItem', (item) => {
   if (!userCanManageAuraEffects()) return;
   if (item.type !== 'effect' || !item.flags?.pf2e?.aura) return;
+  if (isManagedAuraItem(item)) return;
 
   scheduleAuraEffectRefreshForActor(item.actor, 'deleteItem');
 });

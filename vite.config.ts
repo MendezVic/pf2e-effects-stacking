@@ -27,6 +27,10 @@ export default defineConfig({
         target: `http://localhost:30001/modules/${id}/dist`,
         rewrite: () => '/index.ts',
       },
+      [`/modules/${id}/dist/${id}.css`]: {
+        target: `http://localhost:30001/modules/${id}/dist`,
+        rewrite: () => '/styles.css',
+      },
       // Our static localization files live under the module, not in Vite's src/ root.
       [`^/modules/${id}/lang/`]: FOUNDRY,
       // Everything outside our module (Foundry core, the active system, other modules).
