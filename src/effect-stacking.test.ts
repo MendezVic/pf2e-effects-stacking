@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { applyUnifiedEffectStacking, type StackableModifier } from './effect-stacking';
 import { MODULE_ID } from './constants';
 import { buildAggregatedEffectUpdate } from './aura/aggregation';
+import { scheduleAuraEffectRefreshForActor } from './aura/lifecycle';
 
 type ModifierData = Partial<StackableModifier> & Pick<StackableModifier, 'slug' | 'modifier' | 'source'>;
 
@@ -40,10 +41,12 @@ function aggregateEffect(data: {
   rules: Record<string, unknown>[];
   baseRules?: Record<string, unknown>[];
   contributions?: unknown[];
+  sourceId?: string | null;
+  duplicateSource?: string;
 }): {
   type: 'effect';
   id: string;
-  sourceId: string;
+  sourceId: string | null;
   flags: { pf2e: { aura: { slug: string; origin: string; removeOnExit: boolean } }; [MODULE_ID]?: Record<string, unknown> };
   system: { description: { value: string }; rules: Record<string, unknown>[] };
   toObject: () => Record<string, unknown>;
@@ -52,7 +55,7 @@ function aggregateEffect(data: {
   const source = {
     type: 'effect' as const,
     id: 'effect-id',
-    sourceId: 'Compendium.test.Item.effect',
+    sourceId: data.sourceId === undefined ? 'Compendium.test.Item.effect' : data.sourceId,
     flags: {
       pf2e: { aura: { slug: 'test-aura', origin: 'Actor.source-a', removeOnExit: true } },
       [MODULE_ID]: {
@@ -64,6 +67,7 @@ function aggregateEffect(data: {
       description: { value: data.description },
       rules: data.rules,
     },
+    _stats: data.duplicateSource ? { duplicateSource: data.duplicateSource } : {},
     update: async () => null,
   };
 
@@ -75,6 +79,7 @@ function aggregateEffect(data: {
       sourceId: source.sourceId,
       flags: source.flags,
       system: source.system,
+      _stats: source._stats,
     }),
   };
 }
@@ -283,6 +288,19 @@ describe('applyUnifiedEffectStacking', () => {
       ignored: [true, false],
     });
   });
+
+  it('preserves forced modifiers even when another modifier from the same source is better', () => {
+    const modifiers = [
+      modifier({ slug: 'forced', modifier: 1, source: 'same-effect', force: true }),
+      modifier({ slug: 'better', modifier: 2, source: 'same-effect' }),
+    ];
+
+    expect(apply(modifiers)).toEqual({
+      total: 3,
+      enabled: [true, true],
+      ignored: [false, false],
+    });
+  });
 });
 
 describe('buildAggregatedEffectUpdate', () => {
@@ -430,5 +448,98 @@ describe('buildAggregatedEffectUpdate', () => {
         inMemoryOnly: true,
       },
     ]);
+  });
+
+  it('falls back to duplicateSource when an aura effect has no sourceId', () => {
+    const update = buildAggregatedEffectUpdate(
+      aggregateEffect({
+        description: '<p>You gain a +1 status bonus to AC.</p>',
+        sourceId: null,
+        duplicateSource: 'Compendium.test.Item.effect',
+        rules: [
+          {
+            key: 'FlatModifier',
+            selector: 'ac',
+            type: 'status',
+            value: 1,
+          },
+        ],
+      }),
+      twoAuraContributions,
+    );
+
+    expect(update[`flags.${MODULE_ID}.baseRules`]).toEqual([
+      {
+        key: 'FlatModifier',
+        selector: 'ac',
+        type: 'status',
+        value: 1,
+      },
+    ]);
+  });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe('scheduleAuraEffectRefreshForActor', () => {
+  it('does not run overlapping refreshes for the same actor', async () => {
+    vi.useFakeTimers();
+
+    let resolveDelete: () => void = () => undefined;
+    const deleteBlocker = new Promise<void>((resolve) => {
+      resolveDelete = resolve;
+    });
+    let activeDeletes = 0;
+    let maxActiveDeletes = 0;
+    let deleteCalls = 0;
+
+    const staleEffect = aggregateEffect({
+      description: '',
+      rules: [],
+      sourceId: 'Compendium.test.Item.effect',
+    });
+    const actor = {
+      uuid: 'Actor.target',
+      name: 'Target',
+      itemTypes: { effect: [staleEffect] },
+      getActiveTokens: () => [],
+      deleteEmbeddedDocuments: async () => {
+        deleteCalls += 1;
+        activeDeletes += 1;
+        maxActiveDeletes = Math.max(maxActiveDeletes, activeDeletes);
+        await deleteBlocker;
+        actor.itemTypes.effect = [];
+        activeDeletes -= 1;
+        return [];
+      },
+    };
+
+    (globalThis as unknown as { game: unknown }).game = {
+      user: { id: 'gm', isGM: true },
+      users: { activeGM: { id: 'gm' } },
+    };
+    (globalThis as unknown as { canvas: unknown }).canvas = {
+      ready: true,
+      tokens: {
+        placeables: [],
+      },
+    };
+    (globalThis as unknown as { window: unknown }).window = globalThis;
+
+    scheduleAuraEffectRefreshForActor(actor, 'test');
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(deleteCalls).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(250);
+    expect(deleteCalls).toBe(1);
+    expect(maxActiveDeletes).toBe(1);
+
+    resolveDelete();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(maxActiveDeletes).toBe(1);
   });
 });

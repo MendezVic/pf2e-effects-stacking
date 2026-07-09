@@ -5,6 +5,11 @@ function getModuleFlag(item: EffectItem, key: string): unknown {
   return foundry.utils.getProperty(item, `flags.${MODULE_ID}.${key}`);
 }
 
+function effectSourceId(item: EffectItem): string | null {
+  const duplicateSource = foundry.utils.getProperty(item.toObject(), '_stats.duplicateSource');
+  return item.sourceId ?? (typeof duplicateSource === 'string' ? duplicateSource : null);
+}
+
 export function contributionKey(contribution: AuraContribution): string {
   return `${contribution.sourceId}:${contribution.auraSlug}:${contribution.origin}`;
 }
@@ -27,7 +32,8 @@ export function getAuraContributions(effect: EffectItem): AuraContribution[] {
   }
 
   const auraData = effect.flags.pf2e?.aura;
-  if (!auraData?.origin || !effect.sourceId) return [];
+  const sourceId = effectSourceId(effect);
+  if (!auraData?.origin || !sourceId) return [];
 
   return [
     {
@@ -35,7 +41,7 @@ export function getAuraContributions(effect: EffectItem): AuraContribution[] {
       name: auraData.origin,
       token: '',
       auraSlug: auraData.slug ?? '',
-      sourceId: effect.sourceId,
+      sourceId,
       removeOnExit: Boolean(auraData.removeOnExit),
     },
   ];

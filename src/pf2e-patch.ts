@@ -1,10 +1,10 @@
 import { MODULE_ID } from './constants';
 import { applyUnifiedEffectStacking } from './effect-stacking';
 import { debugLog } from './aura/debug';
-import { patchPF2eAuraEffects, scheduleAuraEffectRefreshForActor, scheduleAuraEffectRefreshForScene } from './aura/lifecycle';
+import { patchPF2eAuraEffects, scheduleAuraEffectRefreshForActor, scheduleAuraEffectRefreshForScene, userCanManageAuraEffects } from './aura/lifecycle';
 import type { FlatModifierRuleElementInstance, PF2eGame, StatisticModifierInstance } from './pf2e/types';
 
-export { scheduleAuraEffectRefreshForActor, scheduleAuraEffectRefreshForScene };
+export { scheduleAuraEffectRefreshForActor, scheduleAuraEffectRefreshForScene, userCanManageAuraEffects };
 
 function isPatched(method: unknown): boolean {
   return typeof method === 'function' && Reflect.get(method, MODULE_ID) === true;

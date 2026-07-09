@@ -1,6 +1,6 @@
 import './styles.css';
 import { MODULE_ID } from './constants';
-import { patchPF2eStacking, scheduleAuraEffectRefreshForActor, scheduleAuraEffectRefreshForScene } from './pf2e-patch';
+import { patchPF2eStacking, scheduleAuraEffectRefreshForActor, scheduleAuraEffectRefreshForScene, userCanManageAuraEffects } from './pf2e-patch';
 import { debugLogsEnabled, registerSettings } from './settings';
 
 interface ModuleApi {
@@ -34,18 +34,21 @@ Hooks.once('canvasReady', () => {
 });
 
 Hooks.on('updateToken', (token, changes) => {
+  if (!userCanManageAuraEffects()) return;
   if (!('x' in changes) && !('y' in changes) && !('elevation' in changes)) return;
 
   scheduleAuraEffectRefreshForActor(token.actor, 'updateToken');
 });
 
 Hooks.on('createItem', (item) => {
+  if (!userCanManageAuraEffects()) return;
   if (item.type !== 'effect' || !item.flags?.pf2e?.aura) return;
 
   scheduleAuraEffectRefreshForActor(item.actor, 'createItem');
 });
 
 Hooks.on('deleteItem', (item) => {
+  if (!userCanManageAuraEffects()) return;
   if (item.type !== 'effect' || !item.flags?.pf2e?.aura) return;
 
   scheduleAuraEffectRefreshForActor(item.actor, 'deleteItem');

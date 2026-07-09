@@ -48,6 +48,11 @@ function resolveTypeGroup(modifiers: StackableModifier[], betterFirst: (a: Stack
   const acceptedSources = new Set<string>();
 
   for (const modifier of [...modifiers].sort(betterFirst)) {
+    if (modifier.force) {
+      modifier.enabled = true;
+      continue;
+    }
+
     const source = modifierSource(modifier);
     const hasSourceConflict = acceptedSources.has(source);
 
