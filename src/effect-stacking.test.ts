@@ -28,10 +28,24 @@ function apply(modifiers: StackableModifier[]): { total: number; enabled: boolea
   utils: {
     deepClone: <T>(value: T): T => structuredClone(value),
     escapeHTML: (value: string): string => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
+    fromUuid: async () => null,
     getProperty: (source: Record<string, unknown>, path: string): unknown => {
       return path.split('.').reduce<unknown>((value, key) => {
         return value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
       }, source);
+    },
+    mergeObject: <T extends Record<string, unknown>, U extends Record<string, unknown>>(source: T, update: U): T & U => {
+      return { ...source, ...update };
+    },
+    setProperty: (source: Record<string, unknown>, path: string, value: unknown): void => {
+      const parts = path.split('.');
+      let target = source;
+      for (const part of parts.slice(0, -1)) {
+        const next = target[part];
+        if (!next || typeof next !== 'object') target[part] = {};
+        target = target[part] as Record<string, unknown>;
+      }
+      target[parts.at(-1) ?? path] = value;
     },
   },
 };
@@ -50,7 +64,7 @@ function aggregateEffect(data: {
   flags: { pf2e: { aura: { slug: string; origin: string; removeOnExit: boolean } }; [MODULE_ID]?: Record<string, unknown> };
   system: { description: { value: string }; rules: Record<string, unknown>[] };
   toObject: () => Record<string, unknown>;
-  update: () => Promise<unknown>;
+  update: (data: Record<string, unknown>) => Promise<unknown>;
 } {
   const source = {
     type: 'effect' as const,
@@ -541,5 +555,129 @@ describe('scheduleAuraEffectRefreshForActor', () => {
     await vi.runOnlyPendingTimersAsync();
 
     expect(maxActiveDeletes).toBe(1);
+  });
+
+  it('keeps managed aggregate aura effects out of PF2e native remove-on-exit cleanup', async () => {
+    vi.useFakeTimers();
+
+    const targetToken = { uuid: 'Scene.scene.Token.target' };
+    const sourceEffect = aggregateEffect({
+      description: '<p>You gain a +1 status bonus to AC.</p>',
+      rules: [
+        {
+          key: 'FlatModifier',
+          selector: 'ac',
+          type: 'status',
+          value: 1,
+        },
+      ],
+      sourceId: 'Compendium.test.Item.effect',
+    });
+    const aura = {
+      slug: 'test-aura',
+      level: null,
+      traits: [],
+      effects: [
+        {
+          uuid: 'Compendium.test.Item.effect',
+          removeOnExit: true,
+          affects: 'allies' as const,
+          includesSelf: false,
+          parent: { uuid: 'Item.aura' },
+          predicate: { length: 0, test: () => true },
+          alterations: [],
+        },
+      ],
+    };
+    const renderedAura = {
+      containsToken: (token: unknown) => token === targetToken,
+    };
+    const originActor = {
+      uuid: 'Actor.origin',
+      name: 'Origin',
+      auras: new Map([['test-aura', aura]]),
+      getActiveTokens: () => [{ auras: new Map([['test-aura', renderedAura]]) }],
+      getRollOptions: () => [],
+    };
+    let aggregateUpdate: Record<string, unknown> | null = null;
+    const actor = {
+      uuid: 'Actor.target',
+      name: 'Target',
+      itemTypes: { effect: [] as ReturnType<typeof aggregateEffect>[] },
+      allowedItemTypes: ['effect'],
+      isAllyOf: () => true,
+      isEnemyOf: () => false,
+      isOfType: () => false,
+      getSelfRollOptions: () => [],
+      getActiveTokens: () => [targetToken],
+      createEmbeddedDocuments: async (_embeddedName: string, data: Record<string, unknown>[]) => {
+        const created = {
+          ...data[0],
+          id: 'created-effect',
+          type: 'effect' as const,
+          sourceId: 'Compendium.test.Item.effect',
+          flags: data[0].flags as ReturnType<typeof aggregateEffect>['flags'],
+          system: data[0].system as ReturnType<typeof aggregateEffect>['system'],
+          toObject: () => structuredClone({
+            ...data[0],
+            id: 'created-effect',
+            type: 'effect',
+            sourceId: 'Compendium.test.Item.effect',
+          }),
+          update: async (update: Record<string, unknown>) => {
+            aggregateUpdate = update;
+            return null;
+          },
+        };
+        actor.itemTypes.effect.push(created);
+        return [created];
+      },
+      deleteEmbeddedDocuments: async () => [],
+    };
+
+    (foundry.utils.fromUuid as (uuid: string) => Promise<unknown>) = async (uuid: string) => {
+      if (uuid === 'Compendium.test.Item.effect') return sourceEffect;
+      if (uuid === 'Actor.origin') return originActor;
+      return null;
+    };
+    (globalThis as unknown as { game: unknown }).game = {
+      user: { id: 'gm', isGM: true },
+      users: { activeGM: { id: 'gm' } },
+    };
+    (globalThis as unknown as { canvas: unknown }).canvas = {
+      ready: true,
+      tokens: {
+        placeables: [
+          {
+            actor: originActor,
+            document: {
+              uuid: 'Scene.scene.Token.origin',
+              hidden: false,
+              auras: new Map([['test-aura', renderedAura]]),
+            },
+          },
+        ],
+      },
+    };
+    (globalThis as unknown as { window: unknown }).window = globalThis;
+
+    scheduleAuraEffectRefreshForActor(actor, 'test');
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(aggregateUpdate?.['flags.pf2e.aura']).toEqual({
+      slug: 'test-aura',
+      origin: 'Actor.origin',
+      removeOnExit: false,
+    });
+    expect(aggregateUpdate?.[`flags.${MODULE_ID}.auraContributions`]).toEqual([
+      {
+        origin: 'Actor.origin',
+        name: 'Origin',
+        token: 'Scene.scene.Token.origin',
+        auraSlug: 'test-aura',
+        sourceId: 'Compendium.test.Item.effect',
+        removeOnExit: true,
+      },
+    ]);
   });
 });

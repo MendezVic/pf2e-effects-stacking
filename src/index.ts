@@ -8,6 +8,51 @@ interface ModuleApi {
   stackingPatched: boolean;
 }
 
+function tokenEmitsAuras(token: unknown): boolean {
+  if (!token || typeof token !== 'object') return false;
+
+  const candidate = token as {
+    actor?: { auras?: Map<unknown, unknown> | null } | null;
+    document?: { auras?: Map<unknown, unknown> | null } | null;
+    auras?: Map<unknown, unknown> | null;
+  };
+  return Boolean(candidate.actor?.auras?.size || candidate.document?.auras?.size || candidate.auras?.size);
+}
+
+function tokenSummary(token: unknown): Record<string, unknown> {
+  if (!token || typeof token !== 'object') return { token: null };
+
+  const candidate = token as {
+    id?: string;
+    name?: string;
+    actor?: { name?: string; uuid?: string; auras?: Map<unknown, unknown> | null } | null;
+    document?: { uuid?: string; x?: number; y?: number; auras?: Map<unknown, unknown> | null } | null;
+    auras?: Map<unknown, unknown> | null;
+  };
+
+  return {
+    id: candidate.id,
+    name: candidate.name,
+    uuid: candidate.document?.uuid,
+    actor: candidate.actor?.name,
+    actorUuid: candidate.actor?.uuid,
+    x: candidate.document?.x,
+    y: candidate.document?.y,
+    emitsAuras: tokenEmitsAuras(token),
+    actorAuras: [...(candidate.actor?.auras?.keys?.() ?? [])],
+    documentAuras: [...(candidate.document?.auras?.keys?.() ?? [])],
+    objectAuras: [...(candidate.auras?.keys?.() ?? [])],
+  };
+}
+
+function debugTokenHook(hook: string, token: unknown, data?: Record<string, unknown>): void {
+  if (!debugLogsEnabled()) return;
+  console.debug(`${MODULE_ID} | token | ${hook}`, {
+    token: tokenSummary(token),
+    ...data,
+  });
+}
+
 Hooks.once('init', () => {
   registerSettings();
   if (debugLogsEnabled()) console.debug(`${MODULE_ID} | module initialized`);
@@ -37,7 +82,33 @@ Hooks.on('updateToken', (token, changes) => {
   if (!userCanManageAuraEffects()) return;
   if (!('x' in changes) && !('y' in changes) && !('elevation' in changes)) return;
 
-  scheduleAuraEffectRefreshForActor(token.actor, 'updateToken');
+  if (tokenEmitsAuras(token)) {
+    debugTokenHook('updateToken -> scene refresh', token, { changes, reason: 'updateToken:auraSource' });
+    scheduleAuraEffectRefreshForScene('updateToken:auraSource');
+  } else {
+    debugTokenHook('updateToken -> actor refresh', token, { changes, reason: 'updateToken' });
+    scheduleAuraEffectRefreshForActor(token.actor, 'updateToken');
+  }
+});
+
+Hooks.on('createToken', (token) => {
+  if (!userCanManageAuraEffects()) return;
+
+  if (tokenEmitsAuras(token)) {
+    debugTokenHook('createToken -> scene refresh', token, { reason: 'createToken:auraSource' });
+    scheduleAuraEffectRefreshForScene('createToken:auraSource');
+  } else {
+    debugTokenHook('createToken -> actor refresh', token, { reason: 'createToken' });
+    scheduleAuraEffectRefreshForActor(token.actor, 'createToken');
+  }
+});
+
+Hooks.on('deleteToken', (token) => {
+  if (!userCanManageAuraEffects()) return;
+
+  const reason = tokenEmitsAuras(token) ? 'deleteToken:auraSource' : 'deleteToken';
+  debugTokenHook('deleteToken -> scene refresh', token, { reason });
+  scheduleAuraEffectRefreshForScene(reason);
 });
 
 Hooks.on('createItem', (item) => {

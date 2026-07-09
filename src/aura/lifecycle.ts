@@ -209,6 +209,81 @@ function auraOriginFromToken(token: RuntimeToken): AuraOrigin | null {
   };
 }
 
+function sceneTokenByUuid(uuid: string): RuntimeToken | null {
+  return sceneTokens().find(token => token.document?.uuid === uuid) ?? null;
+}
+
+function actorHasPrunableAuraEffects(actor: ActorPF2eInstance): boolean {
+  return actor.itemTypes.effect.some(effect => {
+    const auraSlug = effect.flags.pf2e?.aura?.slug;
+    const sourceId = auraEffectSourceId(effect);
+    return Boolean(auraSlug && sourceId && shouldRemoveStaleAuraEffect(effect));
+  });
+}
+
+function tokenHasAuraEffects(token: RuntimeToken): boolean {
+  const originActor = token.actor;
+  if (!originActor || token.document?.hidden) return false;
+
+  for (const [auraSlug, aura] of originActor.auras ?? []) {
+    const renderedAura = tokenAura(token, auraSlug);
+    if (renderedAura && (aura.effects?.length ?? 0) > 0) return true;
+  }
+
+  return false;
+}
+
+function auraTokenCouldAffectActor(token: RuntimeToken, actor: ActorPF2eInstance): boolean {
+  const origin = auraOriginFromToken(token);
+  if (!origin || origin.token.hidden) return false;
+  const originActor = origin.actor as RuntimeAuraActor;
+
+  for (const [auraSlug, aura] of originActor.auras ?? []) {
+    const renderedAura = tokenAura(token, auraSlug);
+    if (!renderedAura || !auraContainsActorToken(renderedAura, actor)) continue;
+
+    for (const auraEffect of aura.effects ?? []) {
+      if (!auraAffectsActor(auraEffect, originActor, actor)) continue;
+      if (auraEffectPredicatePasses(actor, originActor, auraEffect)) return true;
+    }
+  }
+
+  return false;
+}
+
+function actorsNeedingSceneAuraRefresh(tokens: RuntimeToken[]): { actors: Set<ActorPF2eInstance>; auraSourceTokens: RuntimeToken[] } {
+  const actors = new Set<ActorPF2eInstance>();
+  const actorTokens = tokens.filter(token => token.actor && !token.document?.hidden);
+  const auraSourceTokens = tokens.filter(tokenHasAuraEffects);
+
+  for (const token of actorTokens) {
+    const actor = token.actor as unknown as ActorPF2eInstance;
+    if (actorHasPrunableAuraEffects(actor)) {
+      actors.add(actor);
+      continue;
+    }
+
+    if (auraSourceTokens.some(auraToken => auraTokenCouldAffectActor(auraToken, actor))) {
+      actors.add(actor);
+    }
+  }
+
+  return { actors, auraSourceTokens };
+}
+
+function runtimeTokenSummary(token: RuntimeToken | null): Record<string, unknown> | null {
+  if (!token) return null;
+
+  return {
+    actor: token.actor?.name,
+    actorUuid: token.actor?.uuid,
+    token: token.document?.uuid,
+    hidden: token.document?.hidden,
+    documentAuras: [...(token.document?.auras?.keys?.() ?? [])],
+    objectAuras: [...(token.auras?.keys?.() ?? [])],
+  };
+}
+
 async function refreshActorAuraEffects(actor: ActorPF2eInstance, reason: string): Promise<void> {
   if (!canvas.ready) return;
   if (!isResponsibleGM()) {
@@ -241,6 +316,19 @@ async function refreshActorAuraEffects(actor: ActorPF2eInstance, reason: string)
 
 async function pruneStaleAggregateAuraEffects(actor: ActorPF2eInstance, groups: AuraContributionGroup[], reason: string): Promise<void> {
   const activeKeys = new Set(groups.map(group => auraEffectKey(group.aura.slug, group.auraEffect.uuid)));
+  const managedAuraEffects = actor.itemTypes.effect.filter(effect => {
+    const auraSlug = effect.flags.pf2e?.aura?.slug;
+    const sourceId = auraEffectSourceId(effect);
+    return Boolean(auraSlug && sourceId && shouldRemoveStaleAuraEffect(effect));
+  });
+
+  debugLog('prune stale aggregate aura effects check', {
+    actor: actorSummary(actor),
+    reason,
+    activeKeys: [...activeKeys],
+    managedEffects: managedAuraEffects.map(effectSummary),
+  });
+
   const staleEffects = actor.itemTypes.effect.filter(effect => {
     const auraSlug = effect.flags.pf2e?.aura?.slug;
     const sourceId = auraEffectSourceId(effect);
@@ -323,14 +411,13 @@ function runQueuedActorAuraRefresh(actor: ActorPF2eInstance, reason: string): vo
 export function scheduleAuraEffectRefreshForScene(reason = 'manual'): void {
   if (!isResponsibleGM()) return;
 
-  const actors = new Set<ActorPF2eInstance>();
-
-  for (const token of sceneTokens()) {
-    if (token.actor) actors.add(token.actor as unknown as ActorPF2eInstance);
-  }
+  const tokens = sceneTokens();
+  const { actors, auraSourceTokens } = actorsNeedingSceneAuraRefresh(tokens);
 
   debugLog('scheduled scene aura refresh', {
     reason,
+    tokenCount: tokens.length,
+    auraSourceTokenCount: auraSourceTokens.length,
     actorCount: actors.size,
     actors: [...actors].map(actorSummary),
   });
@@ -379,7 +466,7 @@ async function createAuraEffectUnchecked(actor: ActorPF2eInstance, aura: AuraDat
   setPath(source, 'flags.pf2e.aura', {
     slug: aura.slug,
     origin: origin.actor.uuid,
-    removeOnExit: auraEffect.removeOnExit,
+    removeOnExit: false,
   });
   setPath(source, 'system.duration.unit', 'unlimited');
   setPath(source, 'system.duration.expiry', null);
@@ -444,7 +531,9 @@ async function applyAuraContributionGroup(actor: ActorPF2eInstance, group: AuraC
   update['flags.pf2e.aura'] = {
     slug: group.aura.slug,
     origin: validContributions[0].origin,
-    removeOnExit: validContributions.some(contribution => contribution.removeOnExit),
+    // PF2e tracks only one aura origin here and can delete the whole aggregate
+    // while other contributors still apply. This module prunes aggregates itself.
+    removeOnExit: false,
   };
   update['system.context'] = {
     target: null,
@@ -492,13 +581,40 @@ async function contributionStillApplies(actor: ActorPF2eInstance, contribution: 
   if (!auraEffectData) return false;
 
   const targetTokens = actor.getActiveTokens(true, true);
-  if (targetTokens.length === 0) return false;
+  if (targetTokens.length === 0) {
+    debugLog('aura contribution invalid: target has no active tokens', {
+      actor: actorSummary(actor),
+      contribution: contributionSummary(contribution),
+    });
+    return false;
+  }
+
+  if (contribution.token) {
+    const originToken = sceneTokenByUuid(contribution.token);
+    const originAura = originToken ? tokenAura(originToken, contribution.auraSlug) : null;
+    const containsTarget = originAura ? targetTokens.some(token => originAura.containsToken(token)) : false;
+    debugLog(containsTarget ? 'aura contribution valid: exact origin token contains target' : 'aura contribution invalid: exact origin token missing or outside target', {
+      actor: actorSummary(actor),
+      contribution: contributionSummary(contribution),
+      originToken: runtimeTokenSummary(originToken),
+      hasOriginAura: Boolean(originAura),
+      targetTokenCount: targetTokens.length,
+    });
+    return containsTarget;
+  }
 
   const originTokens = typeof originActor.getActiveTokens === 'function' ? originActor.getActiveTokens(true, true) : [];
-  return originTokens.some(originToken => {
+  const containsTarget = originTokens.some(originToken => {
     const originAura = originToken?.auras?.get(contribution.auraSlug) ?? null;
     return originAura ? targetTokens.some(token => originAura.containsToken(token)) : false;
   });
+  debugLog(containsTarget ? 'aura contribution valid: actor fallback token contains target' : 'aura contribution invalid: actor fallback tokens outside target', {
+    actor: actorSummary(actor),
+    contribution: contributionSummary(contribution),
+    originTokenCount: originTokens.length,
+    targetTokenCount: targetTokens.length,
+  });
+  return containsTarget;
 }
 
 async function consolidateAuraEffects(actor: ActorPF2eInstance, aura: AuraData, origin: AuraOrigin): Promise<void> {
@@ -620,9 +736,10 @@ async function consolidateAuraEffects(actor: ActorPF2eInstance, aura: AuraData, 
     const update = buildAggregatedEffectUpdate(primaryEffect, validContributions);
     update['flags.pf2e.aura'] = {
       slug: aura.slug,
-      // PF2E still expects a single origin for its native remove-on-exit pass.
       origin: validContributions[0].origin,
-      removeOnExit: validContributions.some(contribution => contribution.removeOnExit),
+      // PF2e tracks only one aura origin here and can delete the whole aggregate
+      // while other contributors still apply. This module prunes aggregates itself.
+      removeOnExit: false,
     };
     update['system.context'] = {
       target: null,
