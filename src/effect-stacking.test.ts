@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { applyUnifiedEffectStacking, type StackableModifier } from './effect-stacking';
 import { MODULE_ID } from './constants';
 import { buildAggregatedEffectUpdate } from './aura/aggregation';
-import { scheduleAuraEffectRefreshForActor } from './aura/lifecycle';
+import { scheduleAuraEffectRefreshForActor, updateEffectIfChanged } from './aura/lifecycle';
 
 type ModifierData = Partial<StackableModifier> & Pick<StackableModifier, 'slug' | 'modifier' | 'source'>;
 
@@ -865,5 +865,47 @@ describe('scheduleAuraEffectRefreshForActor', () => {
     expect(aggregateUpdate?.['system.traits']).toEqual({
       otherTags: ['glorious-banner'],
     });
+  });
+});
+
+describe('updateEffectIfChanged', () => {
+  it('skips updates for effects already gone from the actor collection', async () => {
+    const effect = aggregateEffect({
+      description: '',
+      rules: [],
+      sourceId: 'Compendium.test.Item.effect',
+    });
+    let updateCalls = 0;
+    effect.update = async () => {
+      updateCalls += 1;
+      return null;
+    };
+    const actor = {
+      uuid: 'Actor.target',
+      items: { has: () => false },
+      itemTypes: { effect: [effect] },
+    };
+
+    await updateEffectIfChanged(actor, effect, { 'system.description.value': 'changed' }, {});
+
+    expect(updateCalls).toBe(0);
+  });
+
+  it('tolerates effects disappearing during an update', async () => {
+    const effect = aggregateEffect({
+      description: '',
+      rules: [],
+      sourceId: 'Compendium.test.Item.effect',
+    });
+    effect.update = async () => {
+      throw new Error('undefined id [effect-id] does not exist in the EmbeddedCollection collection.');
+    };
+    const actor = {
+      uuid: 'Actor.target',
+      items: { has: () => true },
+      itemTypes: { effect: [effect] },
+    };
+
+    await expect(updateEffectIfChanged(actor, effect, { 'system.description.value': 'changed' }, {})).resolves.toBeUndefined();
   });
 });

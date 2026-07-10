@@ -131,6 +131,7 @@ function sceneTokens(): RuntimeToken[] {
 const pendingActorRefreshes = new Map<string, number[]>();
 const pendingAuraEffectCreates = new Map<string, Promise<EffectItem | null>>();
 const pendingManagedAuraEffectDeletes = new Map<string, number>();
+const runningAuraEffectOperations = new Map<string, Promise<void>>();
 const runningActorRefreshes = new Map<string, Promise<void>>();
 const queuedActorRefreshReasons = new Map<string, string>();
 const MANAGED_AURA_EFFECT_DELETE_DELAY_MS = 1200;
@@ -158,7 +159,7 @@ function auraEffectCreateKey(actor: ActorPF2eInstance, auraSlug: string, sourceI
   return `${actor.uuid}:${auraEffectKey(auraSlug, sourceId)}`;
 }
 
-function managedAuraEffectDeleteKey(actor: ActorPF2eInstance, id: string): string {
+function managedAuraEffectDeleteKey(actor: Pick<ActorPF2eInstance, 'uuid'>, id: string): string {
   return `${actor.uuid}:${id}`;
 }
 
@@ -177,7 +178,11 @@ function updatesAreNoop(document: EffectItem, update: Record<string, unknown>): 
   });
 }
 
-function actorHasItem(actor: ActorPF2eInstance, id: string): boolean {
+type AuraEffectOwner = Pick<ActorPF2eInstance, 'uuid' | 'itemTypes'> & {
+  items?: { has?: (id: string) => boolean; get?: (id: string) => unknown };
+};
+
+function actorHasItem(actor: AuraEffectOwner, id: string): boolean {
   const items = (actor as { items?: { has?: (id: string) => boolean; get?: (id: string) => unknown } }).items;
   if (typeof items?.has === 'function') return items.has(id);
   if (typeof items?.get === 'function') return Boolean(items.get(id));
@@ -186,28 +191,54 @@ function actorHasItem(actor: ActorPF2eInstance, id: string): boolean {
 
 function isMissingItemError(error: unknown): boolean {
   if (!error || typeof error !== 'object' || !('message' in error)) return false;
-  return typeof error.message === 'string' && /Item ".+" does not exist/.test(error.message);
+  return typeof error.message === 'string' && (/Item ".+" does not exist/.test(error.message) || /id \[.+\] does not exist in the EmbeddedCollection collection/.test(error.message));
 }
 
-async function deleteActorItemsIfPresent(actor: ActorPF2eInstance, ids: string[], context: Record<string, unknown>): Promise<void> {
-  for (const id of [...new Set(ids)]) {
-    if (!actorHasItem(actor, id)) {
-      debugLog('skipped aura effect delete: item already missing', {
-        ...context,
-        id,
-      });
-      continue;
-    }
+async function withAuraEffectOperation<T>(actor: AuraEffectOwner, id: string, operation: () => Promise<T>): Promise<T> {
+  const key = managedAuraEffectDeleteKey(actor, id);
+  const previous = runningAuraEffectOperations.get(key) ?? Promise.resolve();
+  const result = previous.catch(() => undefined).then(operation);
+  const settled = result.then(() => undefined, () => undefined);
+  runningAuraEffectOperations.set(key, settled);
 
-    try {
-      await actor.deleteEmbeddedDocuments('Item', [id]);
-    } catch (error) {
-      if (!isMissingItemError(error)) throw error;
-      debugLog('skipped aura effect delete: item disappeared during delete', {
-        ...context,
-        id,
-      });
+  try {
+    return await result;
+  } finally {
+    if (runningAuraEffectOperations.get(key) === settled) {
+      runningAuraEffectOperations.delete(key);
     }
+  }
+}
+
+async function deleteActorItemsIfPresent(actor: ActorPF2eInstance, ids: string[], context: Record<string, unknown>, shouldDelete?: () => boolean): Promise<void> {
+  for (const id of [...new Set(ids)]) {
+    await withAuraEffectOperation(actor, id, async () => {
+      if (shouldDelete && !shouldDelete()) {
+        debugLog('skipped aura effect delete: cleanup was cancelled', {
+          ...context,
+          id,
+        });
+        return;
+      }
+
+      if (!actorHasItem(actor, id)) {
+        debugLog('skipped aura effect delete: item already missing', {
+          ...context,
+          id,
+        });
+        return;
+      }
+
+      try {
+        await actor.deleteEmbeddedDocuments('Item', [id]);
+      } catch (error) {
+        if (!isMissingItemError(error)) throw error;
+        debugLog('skipped aura effect delete: item disappeared during delete', {
+          ...context,
+          id,
+        });
+      }
+    });
   }
 }
 
@@ -238,7 +269,7 @@ async function deactivateManagedAuraEffects(actor: ActorPF2eInstance, effects: E
     }
 
     try {
-      await updateEffectIfChanged(effect, update, context);
+      await updateEffectIfChanged(actor, effect, update, context);
     } catch (error) {
       if (!isMissingItemError(error)) throw error;
       debugLog('skipped aggregate aura effect deactivate: item disappeared during update', {
@@ -267,7 +298,7 @@ async function deactivateAndScheduleManagedAuraEffectDeletes(actor: ActorPF2eIns
           await deleteActorItemsIfPresent(actor, [effect.id], {
             ...context,
             action: 'delete inactive managed aggregate aura effect',
-          });
+          }, () => pendingManagedAuraEffectDeletes.get(key) === timeoutId);
         } finally {
           if (pendingManagedAuraEffectDeletes.get(key) === timeoutId) {
             pendingManagedAuraEffectDeletes.delete(key);
@@ -321,16 +352,34 @@ function addResolvableParentTags(source: Record<string, unknown>, auraEffect: Au
   }
 }
 
-async function updateEffectIfChanged(effect: EffectItem, update: Record<string, unknown>, context: Record<string, unknown>): Promise<void> {
-  if (updatesAreNoop(effect, update)) {
-    debugLog('skipped aggregate aura effect update: no changes', {
-      ...context,
-      effect: effectSummary(effect),
-    });
-    return;
-  }
+export async function updateEffectIfChanged(actor: AuraEffectOwner, effect: EffectItem, update: Record<string, unknown>, context: Record<string, unknown>): Promise<void> {
+  await withAuraEffectOperation(actor, effect.id, async () => {
+    if (updatesAreNoop(effect, update)) {
+      debugLog('skipped aggregate aura effect update: no changes', {
+        ...context,
+        effect: effectSummary(effect),
+      });
+      return;
+    }
 
-  await effect.update(update);
+    if (!actorHasItem(actor, effect.id)) {
+      debugLog('skipped aggregate aura effect update: item already missing', {
+        ...context,
+        effect: effectSummary(effect),
+      });
+      return;
+    }
+
+    try {
+      await effect.update(update);
+    } catch (error) {
+      if (!isMissingItemError(error)) throw error;
+      debugLog('skipped aggregate aura effect update: item disappeared during update', {
+        ...context,
+        effect: effectSummary(effect),
+      });
+    }
+  });
 }
 
 function collectSceneAuraContributions(actor: ActorPF2eInstance, aura: AuraData, auraEffect: AuraEffectData): AuraContribution[] {
@@ -811,7 +860,7 @@ async function applyAuraContributionGroup(actor: ActorPF2eInstance, group: AuraC
     duplicateIds,
   });
 
-  await updateEffectIfChanged(primaryEffect, update, {
+  await updateEffectIfChanged(actor, primaryEffect, update, {
     actor: actorSummary(actor),
     reason,
     aura: group.aura.slug,
@@ -1035,7 +1084,7 @@ async function consolidateAuraEffects(actor: ActorPF2eInstance, aura: AuraData, 
       contributions: validContributions.map(contributionSummary),
     });
 
-    await updateEffectIfChanged(primaryEffect, update, updateContext);
+    await updateEffectIfChanged(actor, primaryEffect, update, updateContext);
     debugLog('aggregate aura effect checked', {
       ...effectState,
       effect: effectSummary(primaryEffect),
