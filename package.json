@@ -1,9 +1,9 @@
 {
   "name": "pf2e-effects-stacking",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "type": "module",
-  "description": "Foundry VTT PF2e module that stacks same-type effects from different sources.",
+  "description": "Foundry VTT PF2e module that stacks same-type effects from different sources when their names differ.",
   "license": "MIT",
   "engines": {
     "node": ">=22.18.0"

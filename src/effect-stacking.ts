@@ -46,6 +46,7 @@ function modifierSource(modifier: StackableModifier): string {
 
 function resolveTypeGroup(modifiers: StackableModifier[], betterFirst: (a: StackableModifier, b: StackableModifier) => number): void {
   const acceptedSources = new Set<string>();
+  const acceptedSlugs = new Set<string>();
 
   for (const modifier of [...modifiers].sort(betterFirst)) {
     if (modifier.force) {
@@ -55,11 +56,13 @@ function resolveTypeGroup(modifiers: StackableModifier[], betterFirst: (a: Stack
 
     const source = modifierSource(modifier);
     const hasSourceConflict = acceptedSources.has(source);
+    const hasNameConflict = acceptedSlugs.has(modifier.slug);
 
-    modifier.enabled = !hasSourceConflict;
+    modifier.enabled = !hasSourceConflict && !hasNameConflict;
 
     if (modifier.enabled) {
       acceptedSources.add(source);
+      acceptedSlugs.add(modifier.slug);
     }
   }
 }

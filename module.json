@@ -1,8 +1,8 @@
 {
   "id": "pf2e-effects-stacking",
   "title": "PF2e Effects Stacking",
-  "description": "Allows PF2e same-type modifiers to stack when they come from different sources.",
-  "version": "0.1.6",
+  "description": "Allows PF2e same-type modifiers to stack from different sources when they have different effect names.",
+  "version": "0.1.7",
   "license": "MIT",
   "authors": [
     {

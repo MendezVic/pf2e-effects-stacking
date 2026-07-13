@@ -118,24 +118,24 @@ const twoAuraContributions = [
 ];
 
 describe('applyUnifiedEffectStacking', () => {
-  it('stacks same-type bonuses from different sources even when they have the same name', () => {
+  it('keeps only the highest same-type bonus from different sources with the same name', () => {
     const modifiers = [
       modifier({ slug: 'inspired-defense', modifier: 1, source: 'bard-a' }),
-      modifier({ slug: 'inspired-defense', modifier: 1, source: 'bard-b' }),
+      modifier({ slug: 'inspired-defense', modifier: 2, source: 'bard-b' }),
     ];
 
     expect(apply(modifiers)).toEqual({
       total: 2,
-      enabled: [true, true],
+      enabled: [false, true],
       ignored: [false, false],
     });
   });
 
-  it('stacks same-source aura bonuses from different originating effect items', () => {
+  it('keeps only the highest same-name aura bonus from different originating effect items', () => {
     const modifiers = [
       modifier({
         slug: 'protective-wards',
-        modifier: 1,
+        modifier: 2,
         source: 'Protective Wards',
         rule: { item: { uuid: 'Actor.ally-a.Item.protective-wards-effect' } },
       }),
@@ -149,16 +149,16 @@ describe('applyUnifiedEffectStacking', () => {
 
     expect(apply(modifiers)).toEqual({
       total: 2,
-      enabled: [true, true],
+      enabled: [true, false],
       ignored: [false, false],
     });
   });
 
-  it('stacks same-source aura bonuses from different aura origins even with the same effect source id', () => {
+  it('keeps only the highest same-name aura bonus from different aura origins', () => {
     const modifiers = [
       modifier({
         slug: 'protective-wards',
-        modifier: 1,
+        modifier: 2,
         source: 'Actor.target.Item.effect-a',
         rule: {
           item: {
@@ -184,7 +184,7 @@ describe('applyUnifiedEffectStacking', () => {
 
     expect(apply(modifiers)).toEqual({
       total: 2,
-      enabled: [true, true],
+      enabled: [true, false],
       ignored: [false, false],
     });
   });
@@ -225,15 +225,15 @@ describe('applyUnifiedEffectStacking', () => {
     });
   });
 
-  it('stacks same-type penalties from different sources even when they have the same name', () => {
+  it('keeps only the lowest same-type penalty from different sources with the same name', () => {
     const modifiers = [
       modifier({ slug: 'sickened', modifier: -1, source: 'stench-aura' }),
-      modifier({ slug: 'sickened', modifier: -1, source: 'poison' }),
+      modifier({ slug: 'sickened', modifier: -2, source: 'poison' }),
     ];
 
     expect(apply(modifiers)).toEqual({
       total: -2,
-      enabled: [true, true],
+      enabled: [false, true],
       ignored: [false, false],
     });
   });
