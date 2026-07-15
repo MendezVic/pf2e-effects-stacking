@@ -122,16 +122,27 @@ Hooks.on('deleteToken', (token) => {
 
 Hooks.on('createItem', (item) => {
   if (!userCanManageAuraEffects()) return;
-  if (item.type !== 'effect' || !item.flags?.pf2e?.aura) return;
+  if (item.type !== 'effect') return;
   if (isManagedAuraItem(item)) return;
 
-  scheduleAuraEffectRefreshForActor(item.actor, 'createItem');
+  // A stance can add an aura through its rules without the stance item itself
+  // carrying flags.pf2e.aura. Refresh every potentially affected actor after
+  // PF2e has rebuilt the source actor's auras.
+  scheduleAuraEffectRefreshForScene('createItem:effect');
+});
+
+Hooks.on('updateItem', (item) => {
+  if (!userCanManageAuraEffects()) return;
+  if (item.type !== 'effect') return;
+  if (isManagedAuraItem(item)) return;
+
+  scheduleAuraEffectRefreshForScene('updateItem:effect');
 });
 
 Hooks.on('deleteItem', (item) => {
   if (!userCanManageAuraEffects()) return;
-  if (item.type !== 'effect' || !item.flags?.pf2e?.aura) return;
+  if (item.type !== 'effect') return;
   if (isManagedAuraItem(item)) return;
 
-  scheduleAuraEffectRefreshForActor(item.actor, 'deleteItem');
+  scheduleAuraEffectRefreshForScene('deleteItem:effect');
 });
